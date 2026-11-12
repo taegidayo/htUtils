@@ -1,0 +1,40 @@
+# --- 비밀 정보 (절대 커밋 금지) ---
+# 공통 설정 + Cloudflare TURN API 토큰 (예시: agent/agent.json.example)
+agent/agent.json
+**/agent.json
+# PC별 에이전트 로그인 토큰 (원래 %LOCALAPPDATA%·ProgramData에 있지만 복사돼 들어올 경우 대비)
+identity.json
+# Firebase 프로젝트 설정 (예시: web/config.example.js)
+web/config.js
+.firebaserc
+# 서비스 계정 키 / 환경 변수 / 인증서
+*-firebase-adminsdk-*.json
+serviceAccount*.json
+service-account*.json
+.env
+.env.*
+*.pem
+*.key
+*.pfx
+*.p12
+
+# --- 빌드 산출물 / 로그 / 캐시 ---
+bin/
+obj/
+publish/
+# 빌드된 에이전트 exe (agent.json이 들어 있음 — 공개되면 TURN 토큰 노출) / 업데이트 때 비켜 둔 파일
+*.exe
+*.old
+.vs/
+*.user
+.firebase/
+firebase-debug*.log
+database-debug.log
+*.log
+.claude/settings.local.json
+
+# --- Claude Code 작업 메모 (저장소에 올리지 않음) ---
+CLAUDE.md
+CLAUDE.local.md
+**/CLAUDE.md
+.claude/

@@ -1,0 +1,6 @@
+{
+  "apiKey": "FIREBASE_WEB_API_KEY",
+  "databaseUrl": "https://YOUR-PROJECT-default-rtdb.firebaseio.com",
+  "turnKeyId": "",
+  "turnApiToken": ""
+}

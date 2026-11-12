@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HtUtil Agent 다운로드</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 16px; background: #f6f7f9; color: #222; }
+  section { background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 16px; max-width: 600px; }
+  button { font: inherit; padding: 8px 16px; }
+  progress { width: 100%; }
+  ol { padding-left: 1.2em; }
+</style>
+</head>
+<body>
+<section>
+  <h2>HtUtil Agent 다운로드</h2>
+  <p id="info">확인 중...</p>
+  <p><button id="go" disabled>다운로드</button></p>
+  <progress id="bar" value="0" max="1" hidden></progress>
+  <h3>설치 방법</h3>
+  <ol>
+    <li>받은 <code>HtUtil.Agent.exe</code> 실행 (.NET 설치 불필요)</li>
+    <li>Windows가 "PC 보호" 경고를 띄우면 <b>추가 정보 → 실행</b></li>
+    <li>"이 앱이 디바이스를 변경하도록 허용하시겠어요?"(관리자 권한) 창에서 <b>예</b> → 서비스로 설치되어 <b>잠금화면·로그인 화면에서도 원격 가능</b>, 재부팅 후 자동 실행<br>
+        (아니요를 누르면 일반 모드로 실행 — 잠금화면에서는 원격 불가)</li>
+    <li>방화벽 허용 창이 뜨면 <b>허용</b></li>
+    <li>작업 표시줄 트레이에 파란 아이콘이 생기면 완료 (PC는 자동 등록, 이후 업데이트도 자동). 받은 exe 파일은 지워도 됩니다.</li>
+  </ol>
+  <p><a href="./">← 원격 접속 페이지</a></p>
+</section>
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-app.js";
+import { getDatabase, ref, get } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-database.js";
+import { firebaseConfig } from "./config.js";
+
+const db = getDatabase(initializeApp(firebaseConfig));
+const $ = id => document.getElementById(id);
+// 관리자가 웹 관리자 화면에서 올린 exe (downloads/agent: meta + 3MB base64 조각들)
+const meta = (await get(ref(db, "downloads/agent/meta"))).val();
+if (!meta) $("info").textContent = "아직 올라온 파일이 없습니다. 관리자에게 문의하세요.";
+else {
+  $("info").textContent = `버전 ${meta.version} · ${(meta.size / 1048576).toFixed(1)}MB · ${new Date(meta.uploadedAt).toLocaleString()} 올림`;
+  $("go").disabled = false;
+  $("go").onclick = async () => {
+    $("go").disabled = true; $("bar").hidden = false; $("bar").max = meta.chunks;
+    try {
+      const parts = [];
+      for (let i = 0; i < meta.chunks; i++) {
+        const b64 = (await get(ref(db, `downloads/agent/chunks/${i}`))).val();
+        parts.push(await (await fetch("data:application/octet-stream;base64," + b64)).blob());
+        $("bar").value = i + 1;
+      }
+      const blob = new Blob(parts, { type: "application/octet-stream" });
+      if (blob.size !== meta.size) throw new Error("파일 크기가 맞지 않습니다. 다시 받아 주세요.");
+      const a = Object.assign(document.createElement("a"), { href: URL.createObjectURL(blob), download: "HtUtil.Agent.exe" });
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+      $("info").textContent += " — 다운로드 완료";
+    } catch (e) { $("info").textContent = "실패: " + (e.message || e); }
+    $("go").disabled = false;
+  };
+}
+</script>
+</body>
+</html>
