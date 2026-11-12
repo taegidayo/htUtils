@@ -37,7 +37,7 @@ $("gGo").onclick = async () => {
   } catch (e) { fail(e); }
 };
 // 아이디만 입력 → 고정 도메인을 붙여 Firebase 이메일 계정으로 사용 ('@'가 있으면 그대로)
-const LOGIN_DOMAIN = "thinkremote.local";
+const LOGIN_DOMAIN = "htutil.local";
 const toEmail = id => (id = id.trim()).includes("@") ? id : `${id}@${LOGIN_DOMAIN}`;
 const toId = email => email.endsWith("@" + LOGIN_DOMAIN) ? email.slice(0, -LOGIN_DOMAIN.length - 1) : email;
 // 로그인 실패 잠금: 화면이 loginFails에 연속 실패 횟수 기록, 5회 이상이면 DB 규칙이 그 계정을 차단 (레벨 9 제외).
@@ -76,7 +76,10 @@ onAuthStateChanged(auth, async user => {
   const me = ref(db, `users/${user.uid}`);
   const failRef = ref(db, `loginFails/${failKey(user.email)}`);
   const fails = (await get(failRef).catch(() => null))?.val() || 0;
-  const prof = await get(me).catch(() => null); // 잠긴 계정은 규칙이 읽기를 막음
+  const prof = await get(me).catch(e => { // 잠긴 계정은 규칙이 읽기를 막음 — 그 외 실패는 화면에 표시
+    if (fails < MAX_FAILS) status("프로필을 읽지 못했습니다: " + (e.code || e.message));
+    return null;
+  });
   if (fails >= MAX_FAILS && prof?.val()?.level !== 9) { status(LOCKED); return signOut(auth); }
   if (fails) set(failRef, null).catch(() => {}); // 로그인 성공 → 연속 실패 횟수 초기화
   // 최초 로그인: 레벨 0으로 프로필 생성 (자식 경로별 규칙이 적용되도록 multi-path update)

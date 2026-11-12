@@ -12,9 +12,7 @@ namespace HtUtil.Agent;
 sealed class AgentService : ServiceBase
 {
     public const string Name = "HtUtilAgent";
-    public const string OldName = "HtUtilAgent"; // before the rename to HtUtil (removed on install)
-    /// Process names of this agent, current and pre-rename (both must be stopped to free the single-instance mutex).
-    public static readonly string[] ProcessNames = ["HtUtil.Agent", "HtUtil.Agent"];
+    public const string ProcessName = "HtUtil.Agent";
     readonly string _exe = Environment.ProcessPath!;
     readonly object _lock = new();
     System.Threading.Timer? _timer;
@@ -64,8 +62,6 @@ static class Installer
 {
     public static readonly string Dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "HtUtil");
     public static readonly string Exe = Path.Combine(Dir, "HtUtil.Agent.exe");
-    static readonly string OldDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "HtUtil"); // pre-rename install
-    // DataDir keeps its pre-rename name on purpose: it holds this PC's identity (PC ID).
     public static readonly string DataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "HtUtil");
 
     /// Double-clicked exe: hand over to the service (installing/updating it with UAC). false = run in user mode instead.
@@ -102,13 +98,9 @@ static class Installer
     {
         try
         {
-            foreach (var name in new[] { AgentService.Name, AgentService.OldName })
-                using (var sc = ServiceController.GetServices().FirstOrDefault(s => s.ServiceName == name))
-                    if (sc is { Status: not ServiceControllerStatus.Stopped }) { sc.Stop(); sc.WaitForStatus(ServiceControllerStatus.Stopped, TimeSpan.FromSeconds(20)); }
-            // pre-rename install (HtUtilAgent service, Program Files\HtUtil): remove, the new one replaces it
-            if (Run("sc", $"query {AgentService.OldName}") == 0) Run("sc", $"delete {AgentService.OldName}");
+            using (var sc = ServiceController.GetServices().FirstOrDefault(s => s.ServiceName == AgentService.Name))
+                if (sc is { Status: not ServiceControllerStatus.Stopped }) { sc.Stop(); sc.WaitForStatus(ServiceControllerStatus.Stopped, TimeSpan.FromSeconds(20)); }
             KillOtherAgents();
-            try { if (Directory.Exists(OldDir) && !Environment.ProcessPath!.StartsWith(OldDir, StringComparison.OrdinalIgnoreCase)) Directory.Delete(OldDir, true); } catch { }
 
             Directory.CreateDirectory(Dir);
             var self = Environment.ProcessPath!;
@@ -147,13 +139,12 @@ static class Installer
     {
         try
         {
-            foreach (var name in new[] { AgentService.Name, AgentService.OldName }) Run("sc", $"stop {name}");
+            Run("sc", $"stop {AgentService.Name}");
             Thread.Sleep(2000);
-            foreach (var name in new[] { AgentService.Name, AgentService.OldName }) Run("sc", $"delete {name}");
+            Run("sc", $"delete {AgentService.Name}");
             KillOtherAgents();
             Thread.Sleep(1000);
-            foreach (var dir in new[] { Dir, OldDir })
-                if (Directory.Exists(dir) && !Environment.ProcessPath!.StartsWith(dir, StringComparison.OrdinalIgnoreCase)) Directory.Delete(dir, true);
+            if (Directory.Exists(Dir) && !Environment.ProcessPath!.StartsWith(Dir, StringComparison.OrdinalIgnoreCase)) Directory.Delete(Dir, true);
             MessageBox.Show("HtUtil Agent 서비스를 제거했습니다.", Program.AppName);
             return 0;
         }
@@ -172,12 +163,11 @@ static class Installer
         Run("icacls", $"\"{DataDir}\" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F /C /Q"); // folder only, no /T
     }
 
-    /// Other agent copies (session agents, user-mode agents, pre-rename HtUtil.Agent) hold the single-instance mutex.
+    /// Other agent copies (session agents, user-mode agents) hold the single-instance mutex.
     public static void KillOtherAgents()
     {
-        foreach (var name in AgentService.ProcessNames)
-            foreach (var p in Process.GetProcessesByName(name))
-                if (p.Id != Environment.ProcessId) try { p.Kill(); } catch { }
+        foreach (var p in Process.GetProcessesByName(AgentService.ProcessName))
+            if (p.Id != Environment.ProcessId) try { p.Kill(); } catch { }
     }
 
     static int Run(string file, string args)

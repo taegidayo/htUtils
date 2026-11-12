@@ -1,4 +1,4 @@
-﻿# ThinkRemote 한 번에 설정: setup.bat에서 실행됨.
+﻿# HtUtil 한 번에 설정: setup.bat에서 실행됨.
 # Firebase 설정값 받아오기 → web/config.js, agent/agent.json 생성 → 규칙·웹 배포 → 에이전트 배포 폴더 생성
 $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
@@ -18,7 +18,7 @@ function FbJson {
 }
 
 Write-Host @"
-ThinkRemote 설정
+HtUtil 설정
 
 시작 전에 Firebase 콘솔(https://console.firebase.google.com)에서 직접 해야 하는 것:
   1. 프로젝트 생성
@@ -49,7 +49,7 @@ Write-Host $db.databaseUrl
 
 Step "웹 앱 설정값 받기"
 $app = @(FbJson apps:list WEB --project $project) | Select-Object -First 1
-if (-not $app) { $app = FbJson apps:create WEB ThinkRemote --project $project }
+if (-not $app) { $app = FbJson apps:create WEB HtUtil --project $project }
 $cfg = (FbJson apps:sdkconfig WEB $app.appId --project $project).sdkConfig
 $dbUrl = if ($cfg.databaseURL) { $cfg.databaseURL } else { $db.databaseUrl }
 

@@ -1,4 +1,4 @@
-# ThinkRemote — 1단계 프로토타입
+# HtUtil — 1단계 프로토타입
 
 ```
 agent/                 Windows 에이전트 (C#/.NET 9, WinForms + SIPSorcery WebRTC)
@@ -12,13 +12,13 @@ firebase.json
 
 1. Firebase 프로젝트 생성 → Realtime Database 생성, Authentication에서 **이메일/비밀번호**와 **익명** 로그인 사용 설정.
 2. `web/config.example.js`를 `web/config.js`로 복사해 웹 앱 구성 값 입력 → `npx firebase-tools deploy --only database,hosting`
-3. 관리자 만들기: 웹에서 아이디로 가입 (내부적으로 `아이디@thinkremote.local` 이메일 계정이 됨) → 콘솔에서 `users/{uid}/level`을 `9`로 수정.
+3. 관리자 만들기: 웹에서 아이디로 가입 (내부적으로 `아이디@htutil.local` 이메일 계정이 됨) → 콘솔에서 `users/{uid}/level`을 `9`로 수정.
 4. `agent/agent.json.example`을 `agent/agent.json`으로 복사해 **공통 값**(apiKey, databaseUrl, TURN)만 입력 → 빌드. 이 출력 폴더를 그대로 여러 PC에 배포.
    - TURN 사용 시 Cloudflare TURN 키의 `turnKeyId` / `turnApiToken` 입력 (비우면 STUN만 사용).
 5. PC 등록: 각 PC에서 에이전트 실행 → 익명 계정을 만들고 **자동 등록** (승인 없음). PC ID는 9자리 숫자, 이름은 "IP별 PC 이름" → 없으면 컴퓨터 이름.
    - 이름·minLevel·게스트 허용은 관리자 화면 "PC"에서 수정, 모르는 PC는 삭제.
    - "IP별 PC 이름"을 지정하면 그 IP의 기존 PC 이름도 바뀌고, 앞으로 등록되는 PC의 기본 이름이 됨.
-   - 익명 계정의 로그인 토큰은 `%LOCALAPPDATA%\ThinkRemote\identity.json`에 저장 (프로그램 폴더 밖이라 폴더를 복사해도 따라가지 않음). 지우면 새 PC ID로 다시 등록됨.
+   - 익명 계정의 로그인 토큰은 `%LOCALAPPDATA%\HtUtil\identity.json`에 저장 (프로그램 폴더 밖이라 폴더를 복사해도 따라가지 않음). 지우면 새 PC ID로 다시 등록됨.
 
 ## 새 PC에 에이전트 설치 (다운로드 페이지)
 1. `build-agent.bat` 실행 → `publish\agent\HtUtil.Agent.exe` (설정 포함 단일 exe ~55MB, .NET 설치 불필요)

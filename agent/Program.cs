@@ -131,8 +131,7 @@ public sealed class MainForm : Form
         if (goOffline) try { await _agent.GoOffline(); } catch { }
         _tray.Visible = false;
         if (stopService && Agent.ServiceMode)
-            foreach (var name in new[] { AgentService.Name, AgentService.OldName }) // updated-in-place old installs still use the old name
-                try { using var sc = new System.ServiceProcess.ServiceController(name); sc.Stop(); break; } catch { }
+            try { using var sc = new System.ServiceProcess.ServiceController(AgentService.Name); sc.Stop(); } catch (Exception e) { Log.Write($"서비스 중지 실패: {e.Message}"); }
         Application.Exit();
     });
 
