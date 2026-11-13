@@ -15,14 +15,17 @@
 
   <ItemGroup>
     <EmbeddedResource Include="app.ico" LogicalName="app.ico" />
-    <!-- shared config baked into the exe so a single downloaded exe runs; an agent.json next to the exe overrides it -->
-    <EmbeddedResource Include="agent.json" LogicalName="agent.json" Condition="Exists('agent.json')" />
+    <!-- public config (apiKey, databaseUrl only) baked into the exe; build-agent.ps1 writes it without the TURN token.
+         An agent.json next to the exe (TURN token) is merged over it. -->
+    <EmbeddedResource Include="obj\agent.public.json" LogicalName="agent.json" Condition="Exists('obj\agent.public.json')" />
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="NAudio.Wasapi" Version="2.2.1" />
     <PackageReference Include="SIPSorcery" Version="10.0.17" />
     <PackageReference Include="SIPSorceryMedia.Encoders" Version="10.0.4" />
     <PackageReference Include="System.ServiceProcess.ServiceController" Version="9.0.0" />
+    <PackageReference Include="Vortice.Direct3D11" Version="3.6.2" />
   </ItemGroup>
 
   <ItemGroup>

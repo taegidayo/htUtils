@@ -1,5 +1,6 @@
 # --- 비밀 정보 (절대 커밋 금지) ---
-# 공통 설정 + Cloudflare TURN API 토큰 (예시: agent/agent.json.example)
+# 에이전트 공통 설정 (예시: agent/agent.json.example) / PC에 저장되는 TURN 키
+turn.json
 agent/agent.json
 **/agent.json
 # PC별 에이전트 로그인 토큰 (원래 %LOCALAPPDATA%·ProgramData에 있지만 복사돼 들어올 경우 대비)
@@ -22,7 +23,7 @@ service-account*.json
 bin/
 obj/
 publish/
-# 빌드된 에이전트 exe (agent.json이 들어 있음 — 공개되면 TURN 토큰 노출) / 업데이트 때 비켜 둔 파일
+# 빌드된 에이전트 exe (TURN 토큰은 없지만 Firebase 설정이 들어 있음) / 업데이트 때 비켜 둔 파일
 *.exe
 *.old
 .vs/

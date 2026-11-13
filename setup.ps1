@@ -65,17 +65,9 @@ export const firebaseConfig = {
 "@, $utf8)
 Write-Host "web\config.js 생성"
 
-# TURN 값은 기존 agent.json에서 유지
-$turnId = ''; $turnToken = ''
-if (Test-Path agent\agent.json) {
-    try { $old = Get-Content agent\agent.json -Raw | ConvertFrom-Json; $turnId = $old.turnKeyId; $turnToken = $old.turnApiToken } catch { }
-}
-if (-not $turnId) {
-    $turnId = Read-Host "Cloudflare TURN Key ID (없으면 Enter → STUN만 사용)"
-    if ($turnId) { $turnToken = Read-Host "Cloudflare TURN API Token" }
-}
+# TURN 키는 여기 넣지 않음 → 웹 관리자 화면 'TURN 중계'에서 PC로 직접 전송
 [IO.File]::WriteAllText("$PSScriptRoot\agent\agent.json", (@{
-    apiKey = $cfg.apiKey; databaseUrl = $dbUrl; turnKeyId = "$turnId"; turnApiToken = "$turnToken"
+    apiKey = $cfg.apiKey; databaseUrl = $dbUrl
 } | ConvertTo-Json), $utf8)
 Write-Host "agent\agent.json 생성"
 

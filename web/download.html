@@ -4,31 +4,37 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>HtUtil Agent 다운로드</title>
-<style>
-  body { font-family: system-ui, sans-serif; margin: 0; padding: 16px; background: #f6f7f9; color: #222; }
-  section { background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 16px; max-width: 600px; }
-  button { font: inherit; padding: 8px 16px; }
-  progress { width: 100%; }
-  ol { padding-left: 1.2em; }
-</style>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css">
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="icon-192.png">
 </head>
 <body>
-<section>
-  <h2>HtUtil Agent 다운로드</h2>
-  <p id="info">확인 중...</p>
-  <p><button id="go" disabled>다운로드</button></p>
-  <progress id="bar" value="0" max="1" hidden></progress>
-  <h3>설치 방법</h3>
-  <ol>
-    <li>받은 <code>HtUtil.Agent.exe</code> 실행 (.NET 설치 불필요)</li>
-    <li>Windows가 "PC 보호" 경고를 띄우면 <b>추가 정보 → 실행</b></li>
-    <li>"이 앱이 디바이스를 변경하도록 허용하시겠어요?"(관리자 권한) 창에서 <b>예</b> → 서비스로 설치되어 <b>잠금화면·로그인 화면에서도 원격 가능</b>, 재부팅 후 자동 실행<br>
-        (아니요를 누르면 일반 모드로 실행 — 잠금화면에서는 원격 불가)</li>
-    <li>방화벽 허용 창이 뜨면 <b>허용</b></li>
-    <li>작업 표시줄 트레이에 파란 아이콘이 생기면 완료 (PC는 자동 등록, 이후 업데이트도 자동). 받은 exe 파일은 지워도 됩니다.</li>
-  </ol>
-  <p><a href="./">← 원격 접속 페이지</a></p>
-</section>
+<header class="top">
+  <a class="brand" href="./"><img src="icon-192.png" alt=""> HtUtil <span>원격 지원</span></a>
+  <a class="btn" href="./">원격 접속</a>
+</header>
+<main class="narrow">
+  <div class="hero">
+    <h1>HtUtil Agent</h1>
+    <p>원격으로 접속받을 Windows PC에 설치하세요.</p>
+  </div>
+  <div class="card">
+    <div class="card-head"><div><h2>다운로드</h2><p class="muted" id="info" style="margin:4px 0 0">확인 중...</p></div>
+      <button id="go" class="primary" disabled>다운로드</button></div>
+    <progress id="bar" value="0" max="1" hidden></progress>
+  </div>
+  <div class="card" style="margin-top:20px">
+    <h2 style="margin-bottom:16px">설치 방법</h2>
+    <ol class="steps">
+      <li>받은 <code>HtUtil.Agent.exe</code> 실행 (.NET 설치 불필요)</li>
+      <li>Windows가 "PC 보호" 경고를 띄우면 <b>추가 정보 → 실행</b></li>
+      <li>"이 앱이 디바이스를 변경하도록 허용하시겠어요?" 창에서 <b>예</b> → 서비스로 설치되어 <b>잠금화면·로그인 화면에서도 원격 가능</b>, 재부팅 후 자동 실행<br>
+          <span class="muted">아니요를 누르면 일반 모드로 실행 (잠금화면에서는 원격 불가)</span></li>
+      <li>방화벽 허용 창이 뜨면 <b>허용</b></li>
+      <li>작업 표시줄 트레이에 파란 아이콘이 생기면 완료. PC는 자동 등록되고 이후 업데이트도 자동입니다. 받은 exe 파일은 지워도 됩니다.</li>
+    </ol>
+  </div>
+</main>
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-app.js";
 import { getDatabase, ref, get } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-database.js";

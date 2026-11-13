@@ -22,7 +22,22 @@ sealed class AgentService : ServiceBase
 
     public AgentService() { ServiceName = Name; CanStop = true; }
 
-    protected override void OnStart(string[] args) => _timer = new System.Threading.Timer(_ => Tick(), null, 3000, 2000);
+    protected override void OnStart(string[] args)
+    {
+        _timer = new System.Threading.Timer(_ => Tick(), null, 3000, 2000);
+        // Ctrl+Alt+Del for the viewer: SendSAS works from a service (not from the session agent), so the session agent
+        // signals this event and we send it. Both run as SYSTEM, so the default security fits.
+        new Thread(() =>
+        {
+            try
+            {
+                Sas.EnablePolicy();
+                using var ev = new EventWaitHandle(false, EventResetMode.AutoReset, Sas.EventName);
+                while (ev.WaitOne()) { Log.Write("Ctrl+Alt+Del 보냄"); Sas.SendSAS(false); }
+            }
+            catch (Exception e) { Log.Write($"Ctrl+Alt+Del 준비 실패: {e.Message}"); }
+        }) { IsBackground = true }.Start();
+    }
 
     protected override void OnStop() { _timer?.Dispose(); try { _session?.Kill(); } catch { } }
 
@@ -32,14 +47,17 @@ sealed class AgentService : ServiceBase
         {
             try
             {
-                // The web update swapped the exe on disk: exit so the SCM recovery action restarts us from the new file.
+                // The web update swapped the exe on disk: die so the SCM recovery action restarts us from the new file.
+                // Kill, not Environment.Exit: Exit from this timer thread left a 26.11.13.2 service running for good
+                // (its renamed image then blocked the next update's .old delete).
                 var fv = FileVersionInfo.GetVersionInfo(_exe);
-                if (new Version(fv.FileMajorPart, fv.FileMinorPart, fv.FileBuildPart, fv.FilePrivatePart) > Agent.Version) Environment.Exit(1);
+                if (new Version(fv.FileMajorPart, fv.FileMinorPart, fv.FileBuildPart, fv.FilePrivatePart) != Agent.Version) Process.GetCurrentProcess().Kill();
 
                 if (!_cleaned) // once, 3s after start (the installer has exited by then)
                 {
                     _cleaned = true;
                     try { Installer.SecureDataDir(); } catch { } // identity must be readable by the SYSTEM session agent
+                    try { Installer.AllowFirewall(); } catch { } // PCs installed before the rule existed get it after a web update
                     // other agent copies (old session agents, a user-mode agent) would hold the single-instance mutex
                     Installer.KillOtherAgents();
                 }
@@ -117,7 +135,10 @@ static class Installer
             Directory.CreateDirectory(DataDir);
             var id = Path.Combine(DataDir, "identity.json");
             if (!File.Exists(id) && File.Exists(Agent.UserIdPath)) File.Copy(Agent.UserIdPath, id);
+            var turn = Path.Combine(DataDir, "turn.json");
+            if (!File.Exists(turn) && File.Exists(Agent.UserTurnPath)) File.Copy(Agent.UserTurnPath, turn);
             SecureDataDir();
+            AllowFirewall();
 
             if (Run("sc", $"query {AgentService.Name}") != 0)
                 Check(Run("sc", $"create {AgentService.Name} binPath= \"\\\"{Exe}\\\" --service\" start= auto DisplayName= \"HtUtil Agent\""), "서비스 등록");
@@ -142,6 +163,7 @@ static class Installer
             Run("sc", $"stop {AgentService.Name}");
             Thread.Sleep(2000);
             Run("sc", $"delete {AgentService.Name}");
+            Run("netsh", "advfirewall firewall delete rule name=\"HtUtil Agent\"");
             KillOtherAgents();
             Thread.Sleep(1000);
             if (Directory.Exists(Dir) && !Environment.ProcessPath!.StartsWith(Dir, StringComparison.OrdinalIgnoreCase)) Directory.Delete(Dir, true);
@@ -161,6 +183,33 @@ static class Installer
         foreach (var f in Directory.GetFiles(DataDir)) Run("takeown", $"/F \"{f}\" /A"); // owner = Administrators → can rewrite the DACL
         Run("icacls", $"\"{DataDir}\" /reset /T /C /Q");                                // files: inherit only
         Run("icacls", $"\"{DataDir}\" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F /C /Q"); // folder only, no /T
+    }
+
+    /// Inbound allow rule for the installed exe. A SYSTEM service gets no "allow access?" prompt, so without this the
+    /// firewall silently drops the browser's ICE checks (the browser hides its LAN IP behind mDNS, so the agent can't
+    /// open the path first) → same-LAN remote fails toward a PC with the firewall on. Elevated / SYSTEM only.
+    public static void AllowFirewall()
+    {
+        Run("netsh", "advfirewall firewall delete rule name=\"HtUtil Agent\"");
+        Run("netsh", $"advfirewall firewall add rule name=\"HtUtil Agent\" dir=in action=allow program=\"{Exe}\" enable=yes profile=any");
+    }
+
+    /// Session agent, SYSTEM: a service process started before the current exe was written runs an old image (older
+    /// services never restarted after a web update) → kill it; the SCM restarts it from the new exe.
+    public static void KillStaleService()
+    {
+        var pid = ServicePid();
+        if (pid == 0) return;
+        using var p = Process.GetProcessById(pid);
+        if (p.StartTime < File.GetLastWriteTime(Exe)) { Log.Write("옛 버전 서비스 재시작"); p.Kill(); }
+    }
+
+    static int ServicePid()
+    {
+        var psi = new ProcessStartInfo("sc", $"queryex {AgentService.Name}") { CreateNoWindow = true, UseShellExecute = false, RedirectStandardOutput = true };
+        using var p = Process.Start(psi)!;
+        var m = System.Text.RegularExpressions.Regex.Match(p.StandardOutput.ReadToEnd(), @"PID\s*:\s*(\d+)");
+        return m.Success ? int.Parse(m.Groups[1].Value) : 0;
     }
 
     /// Other agent copies (session agents, user-mode agents) hold the single-instance mutex.
@@ -184,15 +233,32 @@ static class Installer
 static class InputDesktop
 {
     [ThreadStatic] static string? _current;
+    static string _logged = "";
 
-    public static void Sync()
+    /// Name of the desktop that currently gets input ("Default", "Winlogon"…), "?" if it can't be opened.
+    public static string Current()
+    {
+        var h = OpenInputDesktop(0, false, 0x0001 /* DESKTOP_READOBJECTS */);
+        if (h == IntPtr.Zero) return "?";
+        try { return Name(h); } finally { CloseDesktop(h); }
+    }
+
+    /// Moves the calling thread to the input desktop and returns its name ("?" = can't open it: user mode on the lock
+    /// screen). Windows refuses (error 170 ERROR_BUSY) once a thread owns any window or hook, so callers use a fresh
+    /// dedicated thread per desktop (ScreenStream, Input) instead of shared pool threads.
+    public static string Sync()
     {
         var h = OpenInputDesktop(0, false, 0x10000000 /* GENERIC_ALL */);
-        if (h == IntPtr.Zero) return; // user mode cannot open the secure desktop: stay where we are
+        if (h == IntPtr.Zero) { Note("?", $"입력 데스크톱을 열 수 없음 (오류 {Marshal.GetLastWin32Error()}) — 잠금화면·관리자 창은 서비스 모드에서만 보임"); return "?"; }
         var name = Name(h);
-        if (name == _current || !SetThreadDesktop(h)) { CloseDesktop(h); return; }
+        if (name == _current) { CloseDesktop(h); return name; }
+        if (!SetThreadDesktop(h)) { var err = Marshal.GetLastWin32Error(); CloseDesktop(h); Note(name, $"데스크톱 전환 실패: {name} (오류 {err})"); return name; }
         _current = name; // ponytail: the thread's previous desktop handle is not closed (one handle per lock/unlock per thread)
+        Note(name, $"데스크톱: {name}");
+        return name;
     }
+
+    static void Note(string key, string msg) { if (_logged == key) return; _logged = key; Log.Write(msg); } // once per change, not per thread
 
     static string Name(IntPtr h)
     {

@@ -17,7 +17,11 @@ if (Test-Path publish\agent) {
         catch { Move-Item -LiteralPath $f.FullName -Destination "$($f.FullName).$(Get-Date -Format HHmmss).old" -Force }
     }
 }
-# 단일 exe, .NET 런타임 포함 (설치 불필요). agent.json은 exe 안에 포함됨 (csproj EmbeddedResource)
+# exe 안에는 공개 값(apiKey, databaseUrl)만 넣음. TURN 키는 관리자 웹에서 PC로 직접 전송 (exe는 공개 다운로드되므로)
+$cfg = Get-Content agent\agent.json -Raw -Encoding utf8 | ConvertFrom-Json
+New-Item -ItemType Directory -Force agent\obj | Out-Null
+[IO.File]::WriteAllText("$PSScriptRoot\agent\obj\agent.public.json", (@{ apiKey = $cfg.apiKey; databaseUrl = $cfg.databaseUrl } | ConvertTo-Json))
+# 단일 exe, .NET 런타임 포함 (설치 불필요)
 dotnet publish agent -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true `
     -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true `
     -p:DebugType=none -p:Version=$ver -o publish\agent

@@ -4,85 +4,116 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>HtUtil</title>
-<style>
-  body { font-family: system-ui, sans-serif; margin: 0; padding: 16px; background: #f6f7f9; color: #222; }
-  section { background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 16px; margin-bottom: 16px; max-width: 900px; }
-  input, select, button { font: inherit; padding: 4px 8px; margin: 2px; }
-  table { border-collapse: collapse; width: 100%; } td, th { border-bottom: 1px solid #eee; padding: 4px; text-align: left; }
-  .on { color: #090; } .off { color: #999; }
-  #viewer { position: fixed; inset: 0; background: #000; display: none; }
-  #viewer video { width: 100%; height: 100%; object-fit: contain; outline: none; cursor: default; }
-  #viewer button { z-index: 1; }
-  #hangUp { position: absolute; top: 8px; right: 8px; }
-  #bar { position: absolute; top: 8px; left: 8px; z-index: 1; color: #fff; font-size: 13px; text-shadow: 0 0 3px #000; }
-  #mons button { margin-right: 4px; } #mons button.cur { font-weight: bold; outline: 2px solid #4af; }
-  #drop { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; z-index: 2; pointer-events: none;
-          background: rgba(30, 90, 200, .35); color: #fff; font-size: 24px; border: 4px dashed #fff; }
-  [hidden] { display: none !important; }
-  /* 모바일: 한 손가락은 마우스로 쓰고, 두 손가락 확대/이동만 브라우저에 맡김 */
-  #video { touch-action: pinch-zoom; -webkit-user-select: none; user-select: none; }
-  #viewer.touch video { height: calc(100% - 52px); }
-  #kbdbar { position: absolute; left: 0; right: 0; bottom: 0; height: 52px; z-index: 1; display: flex; gap: 4px; align-items: center;
-            padding: 0 4px; overflow-x: auto; background: #222; -webkit-overflow-scrolling: touch; }
-  #kbdbar button { flex: none; min-width: 44px; height: 40px; margin: 0; padding: 0 10px; border: 1px solid #555; border-radius: 6px;
-                   background: #333; color: #fff; font-size: 15px; }
-  #kbdbar button.on { background: #2563eb; border-color: #2563eb; }
-  /* 화면 밖 입력칸: 소프트 키보드를 띄우고 입력을 받기만 함 (16px 미만이면 iOS가 확대함) */
-  #kbdin { position: absolute; left: 0; bottom: 0; width: 1px; height: 1px; opacity: 0; font-size: 16px; border: 0; padding: 0; }
-  @media (max-width: 700px) {
-    body { padding: 8px; }
-    section { padding: 12px; }
-    input, select, button { font-size: 16px; padding: 8px 10px; }
-    #login input { width: 100%; box-sizing: border-box; margin: 4px 0; }
-    table { display: block; overflow-x: auto; white-space: nowrap; }
-    #xfer { display: none; }
-  }
-</style>
+<!-- 휴대폰 "홈 화면에 추가" → 주소창 없는 앱처럼 실행 (PWA) -->
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#2563eb">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="HtUtil">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css">
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
-<p id="status"></p>
+<header class="top">
+  <a class="brand" href="./"><img src="icon-192.png" alt=""> HtUtil <span>원격 지원</span></a>
+  <a class="btn" href="download.html">에이전트 다운로드</a>
+</header>
+
+<main>
+<p id="status" role="status"></p>
 
 <section id="login">
-  <p><a href="download.html">▶ 에이전트 다운로드 (원격 받을 PC에 설치)</a></p>
-  <h3>게스트 접속</h3>
-  <input id="gPc" placeholder="PC ID"> <input id="gCode" placeholder="코드 (6자리)" inputmode="numeric">
-  <button id="gGo">접속</button>
-  <h3>계정 접속</h3>
-  <input id="email" placeholder="아이디" autocomplete="username"> <input id="pw" type="password" placeholder="비밀번호">
-  <button id="signIn">로그인</button> <button id="signUp">가입</button>
+  <div class="hero">
+    <h1>어디서나 내 PC에 바로 연결</h1>
+    <p>설치 없이 브라우저에서 원격 PC를 보고 조작하세요.</p>
+  </div>
+  <div class="login">
+    <div class="card">
+      <h2>로그인</h2>
+      <p class="muted">계정으로 로그인하면 등록된 PC 목록이 보입니다.</p>
+      <label>아이디<input id="email" placeholder="아이디" autocomplete="username"></label>
+      <label>비밀번호<input id="pw" type="password" placeholder="비밀번호" autocomplete="current-password"></label>
+      <div class="actions"><button id="signIn" class="primary">로그인</button><button id="signUp">가입</button></div>
+    </div>
+    <div class="card guest">
+      <h2>게스트 접속</h2>
+      <p class="muted">원격 PC 에이전트 창에 표시된 PC ID와 6자리 코드를 입력하세요.</p>
+      <label>PC ID<input id="gPc" placeholder="123456789" inputmode="numeric"></label>
+      <label>코드<input id="gCode" placeholder="6자리" inputmode="numeric" maxlength="7"></label>
+      <div class="actions"><button id="gGo" class="primary">접속 요청</button></div>
+    </div>
+  </div>
 </section>
 
 <section id="pcs" hidden>
-  <p><span id="me"></span> <button id="signOut">로그아웃</button></p>
-  <h3>PC 목록</h3>
-  <table><thead><tr><th>PC</th><th>상태</th><th>최소 레벨</th><th></th></tr></thead><tbody id="pcList"></tbody></table>
+  <div class="card">
+    <div class="card-head"><h2>PC 목록</h2><div class="who"><span id="me"></span><button id="signOut">로그아웃</button></div></div>
+    <div class="table-wrap"><table><thead><tr><th>PC</th><th>상태</th><th>최소 레벨</th><th></th></tr></thead><tbody id="pcList"></tbody></table></div>
+  </div>
 </section>
 
 <section id="admin" hidden>
-  <h3>관리자 · 사용자</h3>
-  <table><thead><tr><th>이름</th><th>UID</th><th>레벨</th></tr></thead><tbody id="userList"></tbody></table>
-  <h3>관리자 · 로그인 실패 / 잠긴 계정</h3>
-  <table><thead><tr><th>아이디</th><th>상태</th><th></th></tr></thead><tbody id="failList"></tbody></table>
-  <h3>관리자 · PC</h3>
-  <table><thead><tr><th>PC ID</th><th>이름</th><th>상태</th><th>버전</th><th>IP</th><th>컴퓨터 이름</th><th>사용자</th><th>OS</th><th>마지막 시작</th><th>minLevel</th><th>게스트 허용</th><th></th></tr></thead><tbody id="pcAdminList"></tbody></table>
-  <h3>관리자 · 에이전트 업데이트</h3>
-  <p>build-agent.bat으로 만든 <code>HtUtil.Agent.exe</code> 선택 → 지금 <b>온라인</b>인 PC 중 버전이 낮은 PC에 바로 전송 (파일은 저장되지 않음)</p>
-  <p><input type="file" id="updFile" accept=".exe"> <span id="updInfo"></span> <button id="updGo" disabled>배포</button>
-     <button id="dlUp" disabled>다운로드 페이지에 올리기</button> <span id="dlInfo"></span></p>
-  <table><thead><tr><th>PC</th><th>현재 버전</th><th>상태</th></tr></thead><tbody id="updList"></tbody></table>
-  <h3>관리자 · IP별 PC 이름</h3>
-  <table><thead><tr><th>IP</th><th>이름</th><th></th></tr></thead><tbody id="ipList"></tbody></table>
-  <p><input id="nIp" placeholder="IP (예: 192.168.0.10)"> <input id="nIpName" placeholder="이름"> <button id="addIp">추가</button></p>
-  <h3>접속 기록 (최근 100건)</h3>
-  <table><thead><tr><th>시작</th><th>종료</th><th>PC</th><th>모드</th><th>사용자</th></tr></thead><tbody id="logList"></tbody></table>
+  <h2 class="section-title">관리자</h2>
+  <div class="grid">
+    <div class="card wide">
+      <h3>PC</h3>
+      <p class="muted">에이전트를 처음 실행하면 자동 등록됩니다. 모르는 PC는 삭제하세요.</p>
+      <div class="table-wrap"><table><thead><tr><th>PC ID</th><th>이름</th><th>상태</th><th>버전</th><th>IP</th><th>컴퓨터 이름</th><th>사용자</th><th>OS</th><th>마지막 시작</th><th>최소 레벨</th><th>게스트</th><th></th></tr></thead><tbody id="pcAdminList"></tbody></table></div>
+    </div>
+    <div class="card">
+      <h3>사용자</h3>
+      <p class="muted">레벨 0 = 접속 불가, PC의 최소 레벨과 같으면 승인 없이, 9 = 관리자.</p>
+      <div class="table-wrap"><table><thead><tr><th>이름</th><th>UID</th><th>레벨</th><th></th></tr></thead><tbody id="userList"></tbody></table></div>
+    </div>
+    <div class="card">
+      <h3>로그인 실패 / 잠긴 계정</h3>
+      <p class="muted">5회 실패하면 잠깁니다.</p>
+      <div class="table-wrap"><table><thead><tr><th>아이디</th><th>상태</th><th></th></tr></thead><tbody id="failList"></tbody></table></div>
+    </div>
+    <div class="card">
+      <h3>접속 승인</h3>
+      <p class="muted">원격 PC의 승인 창에 응답이 없으면 요청을 자동 취소합니다.</p>
+      <label>대기 시간 (초, 10~600)<input id="approvalTimeout" type="number" min="10" max="600"></label>
+    </div>
+    <div class="card">
+      <h3>IP별 PC 이름</h3>
+      <p class="muted">새로 등록되는 PC의 기본 이름. 지정하면 그 IP의 기존 PC 이름도 바뀝니다.</p>
+      <div class="table-wrap"><table><thead><tr><th>IP</th><th>이름</th><th></th></tr></thead><tbody id="ipList"></tbody></table></div>
+      <div class="inline"><input id="nIp" placeholder="192.168.0.10"><input id="nIpName" placeholder="이름"><button id="addIp">추가</button></div>
+    </div>
+    <div class="card wide">
+      <h3>에이전트 업데이트</h3>
+      <p class="muted">build-agent.bat으로 만든 <code>HtUtil.Agent.exe</code>를 고르면 지금 <b>온라인</b>인 PC에 바로 전송합니다 (파일은 저장되지 않음).</p>
+      <div class="inline"><input type="file" id="updFile" accept=".exe"> <span id="updInfo"></span></div>
+      <label style="margin:14px 0 0">업데이트할 버전 (선택)
+        <input id="updUpTo" placeholder="예: 26.11.13.17" autocomplete="off" style="max-width:260px">
+      </label>
+      <p class="muted" style="margin:6px 0 0">비워 두면: 파일보다 <b>낮은 버전</b>인 PC만 업데이트 · 입력하면: 이 버전 <b>이하</b>인 PC는 같거나 높은 버전이어도 <b>무조건</b> 이 파일로 설치 (버전 되돌리기·재설치)</p>
+      <div class="inline"><button id="updGo" class="primary" disabled>배포</button><button id="dlUp" disabled>다운로드 페이지에 올리기</button> <span id="dlInfo"></span></div>
+      <div class="table-wrap"><table><thead><tr><th>PC</th><th>현재 버전</th><th>상태</th></tr></thead><tbody id="updList"></tbody></table></div>
+    </div>
+    <div class="card wide">
+      <h3>TURN 중계 (Cloudflare)</h3>
+      <p class="muted">지금 <b>온라인</b>인 PC에 직접 전송해 각 PC에만 저장합니다 (DB·exe에는 저장 안 됨). 둘 다 비우고 보내면 삭제. 새로 설치한 PC는 다시 보내야 합니다.</p>
+      <div class="inline"><input id="turnId" placeholder="Turn Token ID" autocomplete="off"><input id="turnToken" type="password" placeholder="API Token" autocomplete="new-password">
+        <button id="turnGo" class="primary">온라인 PC에 보내기</button></div>
+      <div class="table-wrap"><table><thead><tr><th>PC</th><th>상태</th></tr></thead><tbody id="turnList"></tbody></table></div>
+    </div>
+    <div class="card wide">
+      <h3>접속 기록 (최근 100건)</h3>
+      <div class="table-wrap"><table><thead><tr><th>시작</th><th>종료</th><th>PC</th><th>모드</th><th>사용자</th></tr></thead><tbody id="logList"></tbody></table></div>
+    </div>
+  </div>
 </section>
+</main>
 
 <div id="viewer">
-  <div id="bar"><span id="mons"></span> <span id="xfer">파일을 화면에 끌어다 놓으면 원격 PC 바탕화면으로 복사</span></div>
-  <button id="hangUp">연결 종료</button>
-  <video id="video" autoplay playsinline muted tabindex="0"></video>
-  <div id="drop">여기에 놓으면 원격 PC 바탕화면으로 복사</div>
-  <!-- 터치 기기용: 탭=클릭, 길게=우클릭, 끌기=드래그(스크롤 모드면 휠), 두 손가락=확대/이동 -->
+  <div id="bar"><span id="mons"></span><span id="xfer">파일을 화면에 끌어다 놓으면 원격 바탕화면으로 복사 · 원격 폴더에서 Ctrl+V로 옮기기</span>
+    <span id="tools"></span><button id="hangUp">연결 종료</button></div>
+  <audio id="audio" autoplay></audio>
+  <div id="screen"><video id="video" autoplay playsinline muted tabindex="0"></video></div>
+  <div id="drop">여기에 놓으면 원격 바탕화면으로 복사 (원하는 폴더에서 Ctrl+V 하면 그리로 옮겨짐)</div>
+  <!-- 터치 기기용: 탭=클릭, 길게=우클릭, 끌기=드래그(스크롤 모드면 휠), 탭 후 다시 눌러 끌기=항상 드래그(확대 중에도), 두 손가락=확대/이동 -->
   <div id="kbdbar" hidden>
     <button data-act="kbd">⌨</button><button data-act="scroll">↕스크롤</button>
     <button data-mod="17">Ctrl</button><button data-mod="18">Alt</button><button data-mod="16">Shift</button><button data-mod="91">Win</button>

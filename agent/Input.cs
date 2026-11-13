@@ -52,10 +52,30 @@ public static class Input
     static void Mouse(uint flags, int data = 0, int x = 0, int y = 0) =>
         Send(new INPUT { type = 0, u = new() { mi = new() { dx = x, dy = y, mouseData = data, dwFlags = flags } } });
 
+    // SendInput goes to the calling thread's desktop. A thread can't move desktops once it owns a window/hook
+    // (error 170), so input runs on its own thread, replaced by a fresh one whenever the input desktop changes
+    // (lock screen / Ctrl+Alt+Del / UAC = "Winlogon").
+    static readonly System.Collections.Concurrent.BlockingCollection<INPUT> Queue = [];
+    static readonly object Gate = new();
+    static bool _running;
+
     static void Send(INPUT i)
     {
-        InputDesktop.Sync(); // input goes to the thread's desktop: follow lock screen / UAC in service mode
-        SendInput(1, [i], Marshal.SizeOf<INPUT>());
+        Queue.Add(i);
+        lock (Gate) if (!_running) { _running = true; Start(null); }
+    }
+
+    static void Start(INPUT? first) => new Thread(() => Work(first)) { IsBackground = true, Name = "input" }.Start();
+
+    static void Work(INPUT? first)
+    {
+        var desk = InputDesktop.Sync();
+        if (first is { } f) SendInput(1, [f], Marshal.SizeOf<INPUT>());
+        foreach (var i in Queue.GetConsumingEnumerable())
+        {
+            if (InputDesktop.Current() is var now && now != desk && now != "?") { Start(i); return; } // hand over to a thread on the new desktop
+            SendInput(1, [i], Marshal.SizeOf<INPUT>());
+        }
     }
 
     const uint MOVE = 1, LDOWN = 2, LUP = 4, RDOWN = 8, RUP = 0x10, MDOWN = 0x20, MUP = 0x40, WHEEL = 0x800, VIRTUALDESK = 0x4000, ABSOLUTE = 0x8000;

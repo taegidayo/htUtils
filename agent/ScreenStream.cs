@@ -8,35 +8,54 @@ using SIPSorceryMedia.Encoders;
 
 namespace HtUtil.Agent;
 
-/// Captures one monitor (GDI), encodes VP8 with screen-tuned libvpx settings and sends it on the peer connection.
+/// Captures one monitor or the whole virtual desktop (GDI), encodes VP8 with screen-tuned libvpx settings and sends it on the peer connection.
 /// Over the input DataChannel it also tells the viewer the monitor list ({t:"mons"}) and cursor shape ({t:"cur"}).
 sealed class ScreenStream(RTCPeerConnection pc, RTCDataChannel dc)
 {
-    const int Fps = 15, KeyFrameEvery = Fps * 3; // periodic key frame so a lost one recovers within 3s
+    const int MaxFps = 30;
+    public const int All = -1; // whole virtual desktop: the viewer splits it into one window per monitor
     volatile int _monitor = Math.Max(0, Array.FindIndex(Screen.AllScreens, s => s.Primary));
 
-    /// Viewer picked another monitor ({t:"mon",i}).
+    /// Viewer picked another monitor ({t:"mon",i}), or All (-1). Only the picked area is captured/encoded.
     public void Select(int i)
     {
-        if (i < 0 || i >= Screen.AllScreens.Length) return;
+        if (i != All && (i < 0 || i >= Screen.AllScreens.Length)) return;
         _monitor = i;
         SendMonitors();
     }
 
-    public void SendMonitors() => Send(new
+    /// x/y are virtual-desktop coordinates; vx/vy/vw/vh = the All frame (virtual desktop) so the viewer can crop.
+    public void SendMonitors()
     {
-        t = "mons", cur = _monitor,
-        list = Screen.AllScreens.Select((s, i) => new { i, w = s.Bounds.Width, h = s.Bounds.Height, primary = s.Primary }),
-    });
+        var v = SystemInformation.VirtualScreen;
+        Send(new
+        {
+            t = "mons", cur = _monitor, vx = v.X, vy = v.Y, vw = v.Width & ~1, vh = v.Height & ~1,
+            list = Screen.AllScreens.Select((s, i) => new { i, x = s.Bounds.X, y = s.Bounds.Y, w = s.Bounds.Width, h = s.Bounds.Height, primary = s.Primary }),
+        });
+    }
 
     void Send(object o) { try { if (dc.readyState == RTCDataChannelState.open) dc.send(JsonSerializer.Serialize(o)); } catch { } }
 
-    // ponytail: GDI CopyFromScreen ~28ms for 1080p (+~13ms encode) → 15fps; DXGI Desktop Duplication if CPU/fps matters.
-    public async Task Run(CancellationToken ct)
+    // Single monitor: DXGI Desktop Duplication (only changed frames, ~30fps). All monitors / secure desktop / no GPU:
+    // GDI CopyFromScreen (~28ms for 1080p → ~15fps). An unchanged screen is re-sent once a second (and as a key frame
+    // every 3s) so a lost packet still heals.
+    public Task Run(CancellationToken ct) => Task.Run(() =>
     {
-        VpxVideoEncoder? enc = null; Bitmap? bmp = null; Graphics? g = null;
+        while (!ct.IsCancellationRequested)
+        {
+            var t = new Thread(() => Loop(ct)) { IsBackground = true, Name = "capture" };
+            t.Start(); t.Join(); // returns when the input desktop changed → next thread starts on the new one
+        }
+    });
+
+    void Loop(CancellationToken ct)
+    {
+        var desk = InputDesktop.Sync(); // fresh thread: always allowed to switch
+        if (desk != "Default") Log.Write($"capture: {desk} 화면 (GDI)");
+        VpxVideoEncoder? enc = null; Bitmap? bmp = null; Graphics? g = null; Dxgi? dx = null;
         var buf = Array.Empty<byte>(); var area = Rectangle.Empty; var codec = default(VideoCodecsEnum);
-        string cursor = ""; long sent = 0; int n = 0;
+        string cursor = ""; long sent = 0, lastSent = 0, lastKey = 0, dxRetry = 0;
         try
         {
             while (!ct.IsCancellationRequested)
@@ -44,44 +63,72 @@ sealed class ScreenStream(RTCPeerConnection pc, RTCDataChannel dc)
                 var t0 = Environment.TickCount64;
                 try
                 {
-                    InputDesktop.Sync(); // follow lock screen / UAC (Winlogon desktop) in service mode
+                    // lock screen / Ctrl+Alt+Del / UAC = "Winlogon" desktop: end this thread, Run starts one there.
+                    // DXGI only on the normal desktop (on the secure one it can just stop delivering frames) → GDI there.
+                    if (InputDesktop.Current() is var now0 && now0 != desk && now0 != "?") return;
                     var screens = Screen.AllScreens;
-                    var b = screens[Math.Clamp(_monitor, 0, screens.Length - 1)].Bounds;
+                    // ponytail: All = one frame of the whole virtual desktop (~2x CPU/bandwidth for 2 monitors, gaps
+                    // between differently sized monitors are captured as black); per-monitor tracks if that matters.
+                    var b = _monitor == All ? SystemInformation.VirtualScreen : screens[Math.Clamp(_monitor, 0, screens.Length - 1)].Bounds;
                     b.Width &= ~1; b.Height &= ~1; // VP8/I420 needs even sizes
                     if (b != area || enc is null) // first frame or monitor switched: new encoder at the new size
                     {
-                        enc?.Dispose(); g?.Dispose(); bmp?.Dispose();
+                        enc?.Dispose(); g?.Dispose(); bmp?.Dispose(); dx?.Dispose(); dx = null; dxRetry = 0;
                         area = b;
                         bmp = new Bitmap(b.Width, b.Height, PixelFormat.Format32bppArgb);
                         g = Graphics.FromImage(bmp);
                         buf = new byte[b.Width * b.Height * 4];
                         enc = new VpxVideoEncoder();
                         codec = enc.SupportedFormats.First().Codec; // encoder's own enum value (see RunSession)
-                        n = 0;
+                        sent = 0; lastSent = 0;
                         Input.Area = b;
-                        Log.Write($"capture: 모니터 {_monitor + 1} {b.Width}x{b.Height}");
+                        Log.Write($"capture: {(_monitor == All ? "모든 모니터" : $"모니터 {_monitor + 1}")} {b.Width}x{b.Height}");
                     }
-                    g!.CopyFromScreen(b.X, b.Y, 0, 0, b.Size);
-                    var d = bmp!.LockBits(new Rectangle(Point.Empty, b.Size), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
-                    Marshal.Copy(d.Scan0, buf, 0, buf.Length);
-                    bmp.UnlockBits(d);
-
-                    if (n % KeyFrameEvery == 1) enc.ForceKeyFrame(); // frame 0 creates the native encoder, frame 1 = first tuned key frame
-                    var frame = enc.EncodeVideo(b.Width, b.Height, buf, VideoPixelFormatsEnum.Bgra, codec);
-                    if (n++ == 0) VpxTuning.Apply(enc);
-                    if (frame is { Length: > 0 })
+                    // ponytail: rotated (portrait) monitors come out rotated from DXGI → they'd need a rotate; GDI is used if DXGI throws.
+                    if (dx is null && _monitor != All && t0 >= dxRetry && desk == "Default")
+                        try { dx = new Dxgi(b); Log.Write("capture: DXGI"); }
+                        catch (Exception e) { dxRetry = t0 + 5000; Log.Write($"capture: GDI 사용 (DXGI 실패: {e.Message})"); }
+                    bool changed;
+                    if (dx is not null)
+                        try { changed = dx.Grab(buf, sent == 0 ? 200 : 30); }
+                        catch (Exception e) { dx.Dispose(); dx = null; dxRetry = t0 + 2000; Log.Write($"capture: DXGI 다시 시작 ({e.Message})"); continue; }
+                    else
                     {
-                        pc.SendVideo(90000 / Fps, frame); // duration in 90kHz RTP units
-                        if (++sent == 1 || sent % 300 == 0) Log.Write($"video: {sent} frames sent ({frame.Length} bytes)");
+                        g!.CopyFromScreen(b.X, b.Y, 0, 0, b.Size);
+                        var d = bmp!.LockBits(new Rectangle(Point.Empty, b.Size), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+                        Marshal.Copy(d.Scan0, buf, 0, buf.Length);
+                        bmp.UnlockBits(d);
+                        changed = true;
+                    }
+
+                    var now = Environment.TickCount64;
+                    if (changed || sent == 0 || now - lastSent >= 1000)
+                    {
+                        if (sent == 1 || now - lastKey >= 3000) { enc.ForceKeyFrame(); lastKey = now; } // frame 0 creates the native encoder
+                        var frame = enc.EncodeVideo(b.Width, b.Height, buf, VideoPixelFormatsEnum.Bgra, codec);
+                        if (sent == 0) VpxTuning.Apply(enc);
+                        if (frame is { Length: > 0 })
+                        {
+                            // RTP timestamp = wall clock (90 kHz). Frames are sent irregularly (only on change), and SendVideo's
+                            // duration only advances the timestamp *after* the frame: passing the gap there made every timestamp
+                            // one gap behind → Chrome saw "late" frames and grew its jitter buffer to seconds (v26.11.13.15).
+                            var tr = pc.VideoStream.LocalTrack;
+                            if (RtpClock.Set(tr, (uint)(now * 90))) pc.SendVideo(0, frame);
+                            else pc.SendVideo(90000 / MaxFps, frame); // setter missing (package changed): old fixed step
+                            if (sent % 900 == 1) Log.Write($"video: {sent} frames sent ({frame.Length} bytes)");
+                        }
+                        sent++; lastSent = now;
                     }
                     var c = CursorCss();
                     if (c != cursor) { cursor = c; Send(new { t = "cur", c }); }
                 }
                 catch (Exception e) { Log.Write($"capture: {e.Message}"); } // e.g. secure desktop (UAC / lock screen)
-                await Task.Delay(Math.Max(1, 1000 / Fps - (int)(Environment.TickCount64 - t0)), ct).ContinueWith(_ => { });
+                // DXGI waits inside Grab; both paced to MaxFps
+                var left = 1000 / MaxFps - (int)(Environment.TickCount64 - t0);
+                if (left > 0) ct.WaitHandle.WaitOne(left);
             }
         }
-        finally { enc?.Dispose(); g?.Dispose(); bmp?.Dispose(); }
+        finally { enc?.Dispose(); g?.Dispose(); bmp?.Dispose(); dx?.Dispose(); }
     }
 
     // Remote cursor shape → CSS cursor for the viewer's own pointer (instant, no latency), like Chrome Remote Desktop.
@@ -102,6 +149,21 @@ sealed class ScreenStream(RTCPeerConnection pc, RTCDataChannel dc)
     [StructLayout(LayoutKind.Sequential)] struct CURSORINFO { public int cbSize, flags; public IntPtr hCursor; public int x, y; }
     [DllImport("user32.dll")] static extern bool GetCursorInfo(ref CURSORINFO ci);
     [DllImport("user32.dll")] static extern IntPtr LoadCursor(IntPtr hInstance, int id);
+}
+
+/// MediaStreamTrack.Timestamp has no public setter in SIPSorcery 10.0.17; we need it to stamp frames with real time.
+static class RtpClock
+{
+    static readonly Action<MediaStreamTrack, uint>? Setter = Make();
+    static Action<MediaStreamTrack, uint>? Make()
+    {
+        // ponytail: non-public member of SIPSorcery 10.0.17 — re-check if the package is upgraded (Set then returns false).
+        var p = typeof(MediaStreamTrack).GetProperty("Timestamp", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+        if (p?.GetSetMethod(true) is { } m) return (t, v) => m.Invoke(t, [v]);
+        var f = typeof(MediaStreamTrack).GetField("<Timestamp>k__BackingField", BindingFlags.Instance | BindingFlags.NonPublic);
+        return f == null ? null : (t, v) => f.SetValue(t, v);
+    }
+    public static bool Set(MediaStreamTrack t, uint v) { if (Setter == null) return false; Setter(t, v); return true; }
 }
 
 /// SIPSorcery's VP8 encoder defaults (VBR 256 kbps, max quantizer 63) make text blurry. Measured on a 1920x1080
