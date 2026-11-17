@@ -1,4 +1,5 @@
 using System.Net.Http.Json;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using SIPSorcery.Net;
@@ -39,6 +40,9 @@ public sealed class Agent(Config cfg, MainForm ui)
         await _fb.Patch($"pcs/{Pc}", new { online = true, lastSeen = Firebase.ServerTime, version = Version.Display() });
         await _fb.Delete($"requests/{Pc}");
         await _fb.Delete($"sessions/{Pc}"); // leftovers, e.g. from the process that just updated us
+        // a session that ended with a crash / reboot. Optional: DB rules older than this agent refuse it (401) —
+        // that once stopped the whole agent at startup (v26.11.13.1 before the rules were deployed).
+        try { await _fb.Delete($"pcs/{Pc}/remote"); } catch (Exception e) { Log.Write($"원격 상태 지우기 실패 (DB 규칙 배포 필요?): {e.Message}"); }
         _ = Task.Delay(10_000).ContinueWith(_ =>
         {
             if (ServiceMode) try { Installer.KillStaleService(); } catch (Exception e) { Log.Write($"service check: {e.Message}"); }
@@ -138,7 +142,29 @@ public sealed class Agent(Config cfg, MainForm ui)
         if (await _fb.Get($"requests/{Pc}") is not JsonObject reqs) return;
         foreach (var (id, r) in reqs)
             if ((string?)r?["status"] == "pending" && _seen.Add(id))
-                _ = Handle(id, (string)r!["uid"]!, (string)r["mode"]!);
+                _ = (string?)r!["mode"] == "kick" ? Kick(id, (string)r["uid"]!) : Handle(id, (string)r["uid"]!, (string)r["mode"]!);
+    }
+
+    // Admin web "강제 해제": ends the current session (not queued behind it like other requests — _busy is held by it).
+    // The web blocks the account itself (users/{uid}/blocked); here we only re-check the requester and end it.
+    bool _kicked;
+    async Task Kick(string reqId, string uid)
+    {
+        var reqPath = $"requests/{Pc}/{reqId}";
+        try
+        {
+            var ok = (int?)(await _fb.Get($"users/{uid}"))?["level"] == 9;
+            await _fb.Patch(reqPath, new { status = ok ? "approved" : "denied" });
+            if (ok && _endSession is { } end)
+            {
+                Log.Write("관리자가 원격을 강제 해제");
+                _kicked = true; end();
+                await NewCode(); // a kicked guest can't come straight back with the same code
+            }
+        }
+        catch (Exception e) { Log.Write($"강제 해제: {e.Message}"); }
+        await Task.Delay(3000);
+        try { await _fb.Delete(reqPath); } catch { }
     }
 
     async Task Handle(string reqId, string uid, string mode)
@@ -165,15 +191,16 @@ public sealed class Agent(Config cfg, MainForm ui)
 
     // Second check on top of DB rules: re-read level / minLevel, ask the local user when required.
     // null = nobody answered within settings/approvalTimeout seconds (admin page, default 30).
-    string _who = ""; bool _admin; // of the request being handled (one session at a time, see _busy)
+    string _who = "", _uid = ""; bool _admin; // of the request being handled (one session at a time, see _busy)
     async Task<bool?> Allowed(string uid, string mode)
     {
-        _who = "게스트"; _admin = false;
+        _who = "게스트"; _uid = ""; _admin = false;
         var wait = Math.Clamp((int?)await _fb.Get("settings/approvalTimeout") ?? 30, 10, 600);
         if (mode == "guest") return ui.Ask($"게스트가 이 PC의 원격 제어를 요청했습니다.\n허용하시겠습니까?", wait);
         var user = await _fb.Get($"users/{uid}");
         var level = (int?)user?["level"] ?? 0;
-        _who = (string?)user?["name"] ?? uid; _admin = level == 9 && mode == "account";
+        _who = (string?)user?["name"] ?? uid; _uid = uid; _admin = level == 9 && mode == "account";
+        if (mode == "account" && (bool?)user?["blocked"] == true) { Log.Write($"{_who}: 관리자가 원격을 차단한 계정, 거부"); return false; }
         if (mode == "update") return level == 9;
         if (mode != "account") return false;
         var minLevel = (int?)await _fb.Get($"pcs/{Pc}/minLevel") ?? 1;
@@ -204,6 +231,7 @@ public sealed class Agent(Config cfg, MainForm ui)
         _ = _fb.Listen($"{sPath}/answer/sdp", (p, d) => { if (p == "/" && d != null) answerTcs.TrySetResult((string)d!); }, answerCts.Token);
         var sdp = await answerTcs.Task.WaitAsync(answerCts.Token);
         answerCts.Cancel();
+        _answerSdp = sdp; // for the country check after connecting
         foreach (var line in sdp.Split('\n').Where(l => l.StartsWith("a=candidate:")))
             Log.Write($"ice remote: {string.Join(' ', line.Trim().Split(' ').Skip(4).Take(4))}"); // address port typ X
         var r = pc.setRemoteDescription(new RTCSessionDescriptionInit { type = RTCSdpType.answer, sdp = sdp });
@@ -226,7 +254,8 @@ public sealed class Agent(Config cfg, MainForm ui)
 
     async Task RunSession(string reqId)
     {
-        var who = _who; var admin = _admin;
+        var who = _who; var uid = _uid; var admin = _admin;
+        _kicked = false;
         var iceServers = await IceServers();
         var pc = new RTCPeerConnection(new RTCConfiguration { iceServers = ToSipIce(iceServers) });
         // SIPSorceryMedia.Encoders 10.0.4 (latest) is built against Abstractions 8.0.12, but SIPSorcery 10 loads
@@ -308,10 +337,18 @@ public sealed class Agent(Config cfg, MainForm ui)
                 await Task.Delay(1000);
                 return;
             }
+            if (await ForeignBlock(pc) is { } why)
+            {
+                Log.Write($"session {reqId}: {why} ({who})");
+                Send(new { t = "bye", m = why });
+                await Task.Delay(1000);
+                return;
+            }
             lastMsg = DateTime.UtcNow; // heartbeat window starts now
             _ = stream.Run(cts.Token);
             try { audio = new AudioStream(pc); } catch (Exception e) { Log.Write($"audio: 사용 안 함 ({e.Message})"); }
             ui.SetRemoteActive(true, who);
+            try { await _fb.Put($"pcs/{Pc}/remote", uid == "" ? new { who, since = Firebase.ServerTime } : (object)new { who, uid, since = Firebase.ServerTime }); } catch (Exception e) { Log.Write($"원격 상태 기록 실패: {e.Message}"); } // shown on the web PC list
             var clipSeq = Clip.Seq;
             // Ends on: viewer hang-up / tab close (DataChannel closes), no heartbeat for 10s, connection loss, local "해제".
             while (!done.Task.IsCompleted)
@@ -329,11 +366,13 @@ public sealed class Agent(Config cfg, MainForm ui)
         finally
         {
             _endSession = null;
+            if (_kicked) { Send(new { t = "bye", m = "관리자가 원격 접속을 강제로 해제했습니다." }); await Task.Delay(500); }
             cts.Cancel();
             audio?.Dispose();
             if (admin) { ui.Privacy(blank: false); ui.Privacy(lockInput: false); }
             pc.close();
             ui.SetRemoteActive(false, who);
+            try { await _fb.Delete($"pcs/{Pc}/remote"); } catch { }
             Log.Write($"session {reqId}: 종료");
         }
     }
@@ -352,6 +391,14 @@ public sealed class Agent(Config cfg, MainForm ui)
     }
 
     Action? _endSession;
+
+    // "해외 IP 차단" (admin page, settings/blockForeign, on unless set to false): reason to refuse this viewer, or null.
+    string _answerSdp = "";
+    async Task<string?> ForeignBlock(RTCPeerConnection pc)
+    {
+        try { if ((bool?)await _fb.Get("settings/blockForeign") == false) return null; } catch { }
+        return await GeoKr.Check(pc, _answerSdp);
+    }
     /// Local user ends the current remote session (banner / tray "원격 해제").
     public void Disconnect() { Log.Write("원격 해제 (이 PC에서)"); _endSession?.Invoke(); }
 
@@ -367,6 +414,7 @@ public sealed class Agent(Config cfg, MainForm ui)
         var file = File.Create(tmp);
         long size = -1, got = 0;
         var force = false; // admin page "강제 설치": same or older version allowed (reinstall over a stuck PC)
+        string? sig = null; // base64 ECDSA signature of the exe (build-agent.ps1 → HtUtil.Agent.exe.sig)
         var pct = -1;
         string? turnMsg = null; // set when the admin sent a TURN key instead of an exe
         var received = new TaskCompletionSource();
@@ -389,6 +437,7 @@ public sealed class Agent(Config cfg, MainForm ui)
                 size = (long)m["size"]!;
                 var v = ParseVersion((string)m["version"]!);
                 force = (bool?)m["force"] ?? false;
+                sig = (string?)m["sig"];
                 if (v <= Version && !force) throw new Exception($"이미 최신 버전입니다 ({Version.Display()})");
                 Log.Write($"업데이트 받는 중: {v.Display()} ({size / 1024} KB)");
                 ui.UpdateProgress($"v{v.Display()} 받는 중...", 0);
@@ -405,11 +454,21 @@ public sealed class Agent(Config cfg, MainForm ui)
         {
             await Offer(pc, reqId, iceServers);
             await WaitConnected(pc, TimeSpan.FromSeconds(20));
+            if (await ForeignBlock(pc) is { } why) throw new Exception(why); // updates from abroad too
             await received.Task.WaitAsync(TimeSpan.FromMinutes(10));
             if (turnMsg != null) { Reply(true, turnMsg); await Task.Delay(1000); return; }
             file.Dispose();
             ui.UpdateProgress("받은 파일 확인 중...", 100);
             if (new FileInfo(tmp).Length != size) throw new Exception("파일 크기가 맞지 않습니다");
+            // Only exes signed with our build PC's key: a stolen admin account can't push its own program. "force" doesn't skip this.
+            if (UpdateKey is not null)
+            {
+                if (sig is null) throw new Exception("서명 없는 파일은 설치하지 않습니다 (HtUtil.Agent.exe.sig도 같이 선택)");
+                bool good;
+                using (var f = File.OpenRead(tmp)) good = UpdateKey.VerifyData(f, Convert.FromBase64String(sig), HashAlgorithmName.SHA256);
+                if (!good) throw new Exception("서명이 맞지 않습니다 — 설치하지 않음");
+                Log.Write("업데이트 서명 확인됨");
+            }
             var fv = System.Diagnostics.FileVersionInfo.GetVersionInfo(tmp); // trust the file, not the message
             var newVer = new Version(fv.FileMajorPart, fv.FileMinorPart, fv.FileBuildPart, fv.FilePrivatePart);
             if (newVer <= Version && !force) throw new Exception($"받은 파일 버전({newVer.Display()})이 현재({Version.Display()})보다 높지 않습니다");
@@ -443,6 +502,16 @@ public sealed class Agent(Config cfg, MainForm ui)
             try { File.Delete(tmp); } catch { }
             pc.close();
         }
+    }
+
+    /// Public key for update signatures (embedded at build). Missing = dev build without a key: updates unchecked.
+    static readonly ECDsa? UpdateKey = LoadUpdateKey();
+    static ECDsa? LoadUpdateKey()
+    {
+        using var s = typeof(Agent).Assembly.GetManifestResourceStream("update.pub");
+        if (s is null) return null;
+        var q = Convert.FromBase64String(new StreamReader(s).ReadToEnd().Trim());
+        return ECDsa.Create(new ECParameters { Curve = ECCurve.NamedCurves.nistP256, Q = new ECPoint { X = q[..32], Y = q[32..] } });
     }
 
     public static readonly Version Version = System.Reflection.Assembly.GetEntryAssembly()!.GetName().Version!;

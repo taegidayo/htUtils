@@ -17,6 +17,8 @@
     <EmbeddedResource Include="app.ico" LogicalName="app.ico" />
     <!-- public config (apiKey, databaseUrl only) baked into the exe; build-agent.ps1 writes it without the TURN token.
          An agent.json next to the exe (TURN token) is merged over it. -->
+    <!-- update signing public key (build-agent.ps1 writes it from keys\update-signing.key) -->
+    <EmbeddedResource Include="update-signing.pub" LogicalName="update.pub" Condition="Exists('update-signing.pub')" />
     <EmbeddedResource Include="obj\agent.public.json" LogicalName="agent.json" Condition="Exists('obj\agent.public.json')" />
   </ItemGroup>
 

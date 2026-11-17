@@ -217,10 +217,20 @@ public sealed class MainForm : Form
         return s is null ? SystemIcons.Application : new Icon(s, SystemInformation.SmallIconSize);
     }
 
+    // Any startup/listen failure (network, DB rules, token) → offline for 30s, then start over. Before, one error left the
+    // agent running but permanently offline, which also meant no web update could reach it.
     async Task RunAgent()
     {
-        try { await _agent.Run(_cts.Token); }
-        catch (Exception e) { Log.Write($"fatal: {e.Message}"); SetOnline(false); }
+        while (!_cts.IsCancellationRequested)
+        {
+            using var attempt = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token); // ends the old attempt's loops
+            try { await _agent.Run(attempt.Token); }
+            catch (Exception e) { Log.Write($"오류: {e.Message} — 30초 후 다시 시작"); }
+            attempt.Cancel();
+            if (_cts.IsCancellationRequested) return;
+            SetOnline(false);
+            await Task.Delay(30_000, _cts.Token).ContinueWith(_ => { });
+        }
     }
 
     void ShowWindow() { Show(); WindowState = FormWindowState.Normal; Activate(); _ = LoadLevel(); }

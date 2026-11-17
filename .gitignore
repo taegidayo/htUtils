@@ -1,6 +1,8 @@
 # --- 비밀 정보 (절대 커밋 금지) ---
 # 에이전트 공통 설정 (예시: agent/agent.json.example) / PC에 저장되는 TURN 키
 turn.json
+# update signing private key (build-agent.ps1 creates it; back it up offline)
+keys/
 agent/agent.json
 **/agent.json
 # PC별 에이전트 로그인 토큰 (원래 %LOCALAPPDATA%·ProgramData에 있지만 복사돼 들어올 경우 대비)

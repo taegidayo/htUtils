@@ -21,15 +21,38 @@ if (Test-Path publish\agent) {
 $cfg = Get-Content agent\agent.json -Raw -Encoding utf8 | ConvertFrom-Json
 New-Item -ItemType Directory -Force agent\obj | Out-Null
 [IO.File]::WriteAllText("$PSScriptRoot\agent\obj\agent.public.json", (@{ apiKey = $cfg.apiKey; databaseUrl = $cfg.databaseUrl } | ConvertTo-Json))
+# 업데이트 서명 키 (ECDSA P-256): 비밀 키 keys\update-signing.key (gitignore, 이 PC에만 — 꼭 백업),
+# 공개 키 agent\update-signing.pub (exe에 들어감). 에이전트는 이 키로 서명된 업데이트만 설치 → 관리자 계정이 털려도 가짜 exe 배포 불가.
+$curve = [Security.Cryptography.ECCurve+NamedCurves]::nistP256
+$keyFile = "$PSScriptRoot\keys\update-signing.key"
+if (-not (Test-Path $keyFile)) {
+    New-Item -ItemType Directory -Force (Split-Path $keyFile) | Out-Null
+    $p = ([Security.Cryptography.ECDsa]::Create($curve)).ExportParameters($true)
+    Set-Content $keyFile ([Convert]::ToBase64String($p.D) + ' ' + [Convert]::ToBase64String([byte[]]($p.Q.X + $p.Q.Y))) -Encoding ascii
+    Write-Host "새 업데이트 서명 키를 만들었습니다: $keyFile" -ForegroundColor Yellow
+    Write-Host "  → USB 등에 꼭 백업하세요. 잃어버리면 웹 업데이트가 막혀 PC마다 직접 다시 설치해야 합니다." -ForegroundColor Yellow
+}
+$keyParts = (Get-Content $keyFile -Raw).Trim().Split(' ')
+Set-Content agent\update-signing.pub $keyParts[1] -Encoding ascii # 비밀 키에서 항상 다시 씀 (둘이 어긋나지 않게)
+
 # 단일 exe, .NET 런타임 포함 (설치 불필요)
 dotnet publish agent -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true `
     -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true `
     -p:DebugType=none -p:Version=$ver -o publish\agent
 if ($LASTEXITCODE) { throw "에이전트 빌드 실패" }
 Remove-Item publish\agent\agent.json -ErrorAction SilentlyContinue # exe 안에 있으므로 exe 하나만 배포
+
+# exe 서명 → HtUtil.Agent.exe.sig (웹 업데이트 때 exe와 같이 선택)
+$q = [Convert]::FromBase64String($keyParts[1])
+$pt = New-Object Security.Cryptography.ECPoint
+$pt.X = [byte[]]$q[0..31]; $pt.Y = [byte[]]$q[32..63]
+$prm = New-Object Security.Cryptography.ECParameters
+$prm.Curve = $curve; $prm.D = [Convert]::FromBase64String($keyParts[0]); $prm.Q = $pt
+$sig = ([Security.Cryptography.ECDsa]::Create($prm)).SignData([IO.File]::ReadAllBytes("$PSScriptRoot\publish\agent\HtUtil.Agent.exe"), [Security.Cryptography.HashAlgorithmName]::SHA256)
+Set-Content publish\agent\HtUtil.Agent.exe.sig ([Convert]::ToBase64String($sig)) -Encoding ascii
 Set-Content agent\version.txt $ver -Encoding ascii
 
 $mb = (Get-Item publish\agent\HtUtil.Agent.exe).Length / 1MB
 Write-Host ("`n완료: $PSScriptRoot\publish\agent\HtUtil.Agent.exe (v$ver, {0:N1}MB)" -f $mb) -ForegroundColor Green
 Write-Host "새 PC 설치: 웹 관리자 화면 '다운로드 페이지에 올리기' → 작업자는 /download.html 에서 받기 (exe 하나, 설치 불필요)"
-Write-Host "기존 PC 업데이트: 웹 관리자 화면 '에이전트 업데이트'에서 이 exe 선택 → 배포"
+Write-Host "기존 PC 업데이트: 웹 관리자 화면 '에이전트 업데이트'에서 HtUtil.Agent.exe와 HtUtil.Agent.exe.sig를 함께 선택 → 배포"

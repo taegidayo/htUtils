@@ -1,7 +1,8 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-app.js";
-import { initializeAuth, inMemoryPersistence, onAuthStateChanged, signInAnonymously, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut }
+import { initializeAuth, inMemoryPersistence, onAuthStateChanged, signInAnonymously, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut,
+  EmailAuthProvider, reauthenticateWithCredential }
   from "https://www.gstatic.com/firebasejs/11.0.2/firebase-auth.js";
-import { getDatabase, ref, get, set, update, push, onValue, onChildAdded, off, query, orderByChild, limitToLast, serverTimestamp, runTransaction }
+import { getDatabase, ref, get, set, update, push, onValue, onChildAdded, off, query, orderByChild, limitToLast, serverTimestamp, runTransaction, onDisconnect }
   from "https://www.gstatic.com/firebasejs/11.0.2/firebase-database.js";
 import { firebaseConfig } from "./config.js";
 
@@ -16,6 +17,13 @@ let serverOffset = 0;
 onValue(ref(db, ".info/serverTimeOffset"), s => serverOffset = s.val() || 0);
 const isOnline = p => p.online && p.lastSeen > Date.now() + serverOffset - 90000; // agent heartbeat = 30s
 
+// PC 상태 배지: 원격 중이면 누가·언제부터 (에이전트가 pcs/{id}/remote에 기록, 끝나면 지움)
+function pcState(p) {
+  if (!isOnline(p)) return el("span", { textContent: "오프라인", className: "off" });
+  if (!p.remote) return el("span", { textContent: "온라인", className: "on" });
+  const since = new Date(p.remote.since).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return el("span", { textContent: `원격 중 · ${p.remote.who} (${since}~)`, className: "busy", title: `${p.remote.who} 님이 ${since}부터 원격 제어 중` });
+}
 function row(tbody, cells) {
   const tr = tbody.insertRow();
   for (const c of cells) tr.insertCell().append(c ?? "");
@@ -58,17 +66,61 @@ $("signIn").onclick = async () => {
     } catch (e2) { fail(e2); }
   }
 };
-$("signUp").onclick = () => createUserWithEmailAndPassword(auth, toEmail($("email").value), $("pw").value).catch(fail);
-$("signOut").onclick = () => signOut(auth);
+// 가입 버튼 없음: 관리자가 "계정 만들기"로 만듦. (Firebase는 apiKey로 직접 가입을 막지 못함 → 그렇게 만든 계정은
+// 프로필이 레벨 0이라 규칙상 PC 목록도 못 봄. 완전히 막으려면 Firebase 콘솔 Authentication → 설정에서 가입 끄기)
+$("signOut").onclick = () => logout();
+
+// ---------- 로그인 세션 (presence) ----------
+// 로그인한 창마다 presence/{uid}/{sid} = {ip, ua, at}. 창을 닫거나 연결이 끊기면 서버가 지움(onDisconnect), 로그아웃 때는 직접 지움.
+// 강제 로그아웃 = users/{uid}/logoutBefore = 지금: 그 전에 로그인한 창은 스스로 로그아웃하고, DB 규칙도 PC 목록·원격 요청을 막음.
+let presRef = null, loginAt = 0, relogging = false;
+// 로그인 칸 비우기: 로그인 직후와 로그아웃(강제 포함) 때 — 화면에 아이디·비밀번호가 남지 않게
+const clearLogin = () => ["email", "pw", "gPc", "gCode", "reauthPw"].forEach(id => $(id).value = "");
+async function logout(msg) {
+  clearLogin();
+  if (msg) status(msg);
+  if (presRef) { await set(presRef, null).catch(() => {}); presRef = null; }
+  await signOut(auth);
+}
+// ponytail: 공인 IP·국가는 브라우저가 모름 → 외부 서비스(ipapi.co)에 물어봄. 브라우저가 알려 주는 값이라 위조 가능 (참고·화면 차단용).
+// 진짜 해외 차단은 에이전트가 연결된 IP로 검사함 (GeoKr.cs).
+const whereAmI = () => fetch("https://ipapi.co/json/", { signal: AbortSignal.timeout(4000) }).then(r => r.json())
+  .then(j => ({ ip: j.ip || "?", cc: j.country_code || "" }), () => ({ ip: "?", cc: "" }));
+function device() {
+  const ua = navigator.userAgent;
+  const os = /Android/.test(ua) ? "Android" : /iPhone|iPad/.test(ua) ? "iOS" : /Windows/.test(ua) ? "Windows" : /Mac/.test(ua) ? "Mac" : /Linux/.test(ua) ? "Linux" : "?";
+  const br = /Edg\//.test(ua) ? "Edge" : /SamsungBrowser/.test(ua) ? "Samsung" : /Chrome\//.test(ua) ? "Chrome" : /Firefox\//.test(ua) ? "Firefox" : /Safari\//.test(ua) ? "Safari" : "?";
+  return `${br} · ${os}` + (matchMedia("(display-mode: standalone)").matches ? " (앱)" : "");
+}
+// 이 창만 남기고 모두 로그아웃: 비밀번호 확인 → logoutBefore = 지금 → 이 창은 같은 비밀번호로 다시 로그인(새 로그인 시각)
+$("logoutOthers").onclick = () => { $("reauth").hidden = !$("reauth").hidden; $("reauthPw").focus(); };
+$("reauthGo").onclick = async () => {
+  const u = auth.currentUser, pw = $("reauthPw").value;
+  if (!pw) return status("비밀번호를 입력하세요.");
+  try { await reauthenticateWithCredential(u, EmailAuthProvider.credential(u.email, pw)); }
+  catch { return status("비밀번호가 맞지 않습니다."); }
+  relogging = true;
+  try {
+    await set(ref(db, `users/${u.uid}/logoutBefore`), serverTimestamp());
+    await sleep(1200); // 규칙은 초 단위 로그인 시각과 비교 → 다음 초에 다시 로그인
+    await signInWithEmailAndPassword(auth, u.email, pw);
+    loginAt = Date.parse((await auth.currentUser.getIdTokenResult(true)).authTime);
+    $("reauthPw").value = ""; $("reauth").hidden = true;
+    status("이 창을 제외한 모든 곳에서 로그아웃했습니다.");
+  } catch (e) { fail(e); }
+  finally { relogging = false; }
+};
 // Enter 키: 아이디/비밀번호 칸 → 로그인, 게스트 코드 칸 → 접속 (한글 입력 조합 중의 Enter는 무시)
 const onEnter = (ids, btn) => ids.forEach(id => $(id).addEventListener("keydown", e => e.key === "Enter" && !e.isComposing && $(btn).click()));
 onEnter(["email", "pw"], "signIn");
 onEnter(["gPc", "gCode"], "gGo");
+onEnter(["reauthPw"], "reauthGo");
 
 let unsubs = [];
 onAuthStateChanged(auth, async user => {
   unsubs.forEach(u => u()); unsubs = [];
   const account = user && !user.isAnonymous;
+  if (account) clearLogin();
   $("login").hidden = account; $("pcs").hidden = !account; $("admin").hidden = true;
   if (!account) return;
   const name = toId(user.email);
@@ -80,33 +132,59 @@ onAuthStateChanged(auth, async user => {
     if (fails < MAX_FAILS) status("프로필을 읽지 못했습니다: " + (e.code || e.message));
     return null;
   });
-  if (fails >= MAX_FAILS && prof?.val()?.level !== 9) { status(LOCKED); return signOut(auth); }
-  if (prof?.val()?.deleted) { status("관리자가 삭제한 계정입니다."); return signOut(auth); }
+  if (fails >= MAX_FAILS && prof?.val()?.level !== 9) return logout(LOCKED);
+  if (prof?.val()?.deleted) return logout("관리자가 삭제한 계정입니다.");
+  loginAt = Date.parse((await user.getIdTokenResult()).authTime);
+  if (!presRef) {
+    presRef = push(ref(db, `presence/${user.uid}`));
+    onDisconnect(presRef).remove();
+    const r = presRef;
+    whereAmI().then(async ({ ip, cc }) => {
+      // 해외 IP 차단 (관리자 설정, 기본 켜짐): 웹에서도 바로 로그아웃. 국가를 모르면(조회 실패) 통과 — 원격은 에이전트가 다시 막음
+      const block = (await get(ref(db, "settings/blockForeign")).catch(() => null))?.val() !== false;
+      if (block && cc && cc !== "KR") return logout(`해외(${cc})에서는 접속할 수 없습니다.`);
+      if (r === presRef) await set(r, { ip, cc, ua: device(), at: serverTimestamp() });
+    }).catch(() => {});
+  }
   if (fails) set(failRef, null).catch(() => {}); // 로그인 성공 → 연속 실패 횟수 초기화
   // 최초 로그인: 레벨 0으로 프로필 생성 (자식 경로별 규칙이 적용되도록 multi-path update)
   if (prof && !prof.exists()) await update(ref(db), { [`users/${user.uid}/name`]: name, [`users/${user.uid}/level`]: 0 }).catch(fail);
-  let pcs = {}, admin = false;
+  let pcs = {}, admin = false, blocked = false, level = 0;
   const render = () => {
     const tb = $("pcList"); tb.replaceChildren();
+    if (level < 1) { row(tb, ["관리자가 이 계정의 레벨을 정하면 PC 목록이 보입니다.", "", "", ""]); return; }
     for (const [id, p] of Object.entries(pcs)) {
       const on = isOnline(p), actions = el("span");
-      if (on) actions.append(el("button", { textContent: "원격 접속", className: "primary" }, { click: () => connect(id, "account").catch(fail) }));
+      if (on && blocked) actions.append(el("span", { textContent: "원격 차단됨 (관리자 문의)", className: "off" }));
+      else if (on) actions.append(el("button", { textContent: "원격 접속", className: "primary" }, { click: () => connect(id, "account").catch(fail) }));
+      if (admin && on && p.remote) actions.append(el("button", { textContent: "강제 해제", className: "danger" }, { click: () => kickPc(id, p) }));
       if (admin) actions.append( // 관리자: 이름 변경 / 삭제 (DB 규칙도 레벨 9만 허용)
         el("button", { textContent: "이름 변경" }, { click: () => renamePc(id, p.name) }),
         el("button", { textContent: "삭제", className: "danger" }, { click: () => deletePc(id, p) }));
-      row(tb, [`${p.name || id} (${id})`, el("span", { textContent: on ? "온라인" : "오프라인", className: on ? "on" : "off" }),
+      row(tb, [`${p.name || id} (${id})`, pcState(p),
         String(p.minLevel ?? ""), actions]);
     }
   };
   unsubs.push(onValue(me, s => {
     const lv = s.val()?.level ?? 0;
+    const lb = s.val()?.logoutBefore; // 다른 곳에서 "모두 로그아웃" / 관리자 강제 로그아웃
+    if (lb && lb > loginAt && !relogging) { logout("로그아웃되었습니다 (다른 곳에서 '모두 로그아웃'했거나 관리자가 로그아웃시킴). 다시 로그인하세요."); return; }
+    blocked = !!s.val()?.blocked;
     $("me").textContent = `${name} (레벨 ${lv})`;
     admin = lv === 9;
     if (admin && $("admin").hidden) startAdmin();
     $("admin").hidden = !admin;
+    level = lv;
+    watchPcs(lv >= 1);
     render();
   }));
-  unsubs.push(onValue(ref(db, "pcs"), s => { pcs = s.val() || {}; render(); }));
+  // PC 목록은 레벨 1 이상만 (규칙도 같음): 레벨이 바뀌면 구독을 켜고 끔
+  let pcsOff = null;
+  const watchPcs = on => {
+    if (on && !pcsOff) pcsOff = onValue(ref(db, "pcs"), s => { pcs = s.val() || {}; render(); }, () => { pcs = {}; render(); });
+    if (!on && pcsOff) { pcsOff(); pcsOff = null; pcs = {}; }
+  };
+  unsubs.push(() => watchPcs(false));
   const t = setInterval(render, 15000); unsubs.push(() => clearInterval(t));
 });
 
@@ -615,6 +693,18 @@ function renamePc(id, current) {
   update(ref(db, `pcs/${id}`), { name }).then(() => status(`이름 변경됨: ${name}`), fail);
 }
 // 삭제된 PC의 에이전트는 다음 실행 때 새 PC ID로 다시 등록됨.
+// 관리자: 지금 원격 중인 세션을 끊고 그 계정의 원격 접속을 차단 (사용자 표에서 "차단 해제"로 다시 허용)
+async function kickPc(id, p) {
+  const r = p.remote, guest = !r.uid;
+  if (r.uid === auth.currentUser.uid) return status("내 원격은 원격 화면의 \"연결 종료\"로 끝내세요.");
+  if (!confirm(`${r.who} 님의 원격을 강제로 해제할까요?` + (guest ? "\n(게스트: 코드가 새로 바뀝니다)" : "\n이 계정은 관리자가 허용할 때까지 원격 접속이 차단됩니다."))) return;
+  try {
+    if (!guest) await set(ref(db, `users/${r.uid}/blocked`), true);
+    await set(push(ref(db, `requests/${id}`)), { uid: auth.currentUser.uid, mode: "kick", status: "pending", createdAt: serverTimestamp() });
+    status(`${r.who} 님의 원격을 해제했습니다` + (guest ? "" : " (계정 차단됨)"));
+  } catch (e) { fail(e); }
+}
+
 function deletePc(id, p) {
   if (!confirm(`PC "${p.name || id}" (${id})를 삭제할까요?\n에이전트가 다시 실행되면 새 PC ID로 다시 등록됩니다.`)) return;
   const upd = { [`pcs/${id}`]: null, [`pcSecrets/${id}`]: null };
@@ -680,11 +770,11 @@ async function pushTurn(pcId, keyId, token, show) {
   } finally { conn.close(); }
 }
 
-async function pushUpdate(pcId, buf, ver, show, force = false) {
+async function pushUpdate(pcId, buf, ver, show, force = false, sig = null) {
   show("연결 중...");
   const { conn, ch, result } = await adminChannel(pcId);
   try {
-    ch.send(JSON.stringify({ t: "start", size: buf.byteLength, version: fmtVer(ver), force })); // force: 버전 비교 없이 설치
+    ch.send(JSON.stringify({ t: "start", size: buf.byteLength, version: fmtVer(ver), force, sig })); // force: 버전 비교 없이 설치, sig: exe 서명
     const CHUNK = 16384;
     ch.bufferedAmountLowThreshold = 256 * 1024;
     for (let o = 0; o < buf.byteLength && ch.readyState === "open"; o += CHUNK) {
@@ -698,10 +788,41 @@ async function pushUpdate(pcId, buf, ver, show, force = false) {
   } finally { conn.close(); }
 }
 
+// 관리자: 계정 만들기. 기본 앱으로 가입하면 관리자 본인이 새 계정으로 바뀌어 로그인되므로, 별도 앱 인스턴스로 만들고 바로 로그아웃
+const creator = initializeAuth(initializeApp(firebaseConfig, "creator"), { persistence: inMemoryPersistence });
+$("newUser").onclick = async () => {
+  const id = $("newId").value.trim(), pw = $("newPw").value, lv = +$("newLevel").value;
+  if (!/^[A-Za-z0-9._-]{2,40}$/.test(id)) return status("아이디는 영문·숫자·._- 2~40자로 입력하세요.");
+  if (pw.length < 6) return status("임시 비밀번호는 6자 이상이어야 합니다.");
+  try {
+    const { user } = await createUserWithEmailAndPassword(creator, toEmail(id), pw);
+    await signOut(creator);
+    await update(ref(db), { [`users/${user.uid}/name`]: id, [`users/${user.uid}/level`]: lv });
+    $("newId").value = ""; $("newPw").value = "";
+    status(`계정 만듦: ${id} (레벨 ${lv}) — 임시 비밀번호를 전달하세요.`);
+  } catch (e) { fail(e); }
+};
+
 function startAdmin() {
-  let users = {};
+  let users = {}, pres = {};
+  // 로그인 중인 창들 (계정·IP·기기·시각). 강제 로그아웃은 그 계정의 모든 창.
+  const renderPres = () => {
+    const tb = $("presList"); tb.replaceChildren();
+    const rows = Object.entries(pres).flatMap(([uid, ss]) => Object.entries(ss || {}).map(([sid, s]) => ({ uid, sid, ...s })))
+      .sort((a, b) => (b.at || 0) - (a.at || 0));
+    for (const s of rows) {
+      const mine = s.uid === auth.currentUser.uid, here = presRef?.key === s.sid;
+      row(tb, [(users[s.uid]?.name || s.uid) + (here ? " (이 창)" : ""), (s.ip || "?") + (s.cc ? ` (${s.cc})` : ""), s.ua || "", s.at ? new Date(s.at).toLocaleString() : "",
+        mine ? "" : el("button", { textContent: "강제 로그아웃", className: "danger" }, { click: () => {
+          if (!confirm(`${users[s.uid]?.name || s.uid} 계정을 모든 곳에서 로그아웃시킬까요?`)) return;
+          set(ref(db, `users/${s.uid}/logoutBefore`), serverTimestamp()).then(() => status("강제 로그아웃했습니다."), fail);
+        } })]);
+    }
+  };
+  unsubs.push(onValue(ref(db, "presence"), s => { pres = s.val() || {}; renderPres(); }));
   unsubs.push(onValue(ref(db, "users"), s => {
     users = s.val() || {};
+    renderPres();
     const tb = $("userList"); tb.replaceChildren();
     for (const [uid, u] of Object.entries(users)) {
       if (u.deleted) continue;
@@ -711,7 +832,10 @@ function startAdmin() {
       const del = uid === auth.currentUser.uid ? "" : el("button", { textContent: "삭제", className: "danger" }, { click: () =>
         confirm(`${u.name} 계정을 삭제할까요? 더 이상 로그인할 수 없습니다.`) &&
         update(ref(db, `users/${uid}`), { level: 0, deleted: true }).then(() => status(`${u.name} 계정 삭제됨`), fail) });
-      row(tb, [u.name, uid, sel, del]);
+      // 강제 해제로 차단된 계정: 여기서 다시 허용 (DB 규칙·에이전트가 blocked면 원격 거부)
+      const block = el("button", { textContent: u.blocked ? "차단 해제" : "원격 차단", className: u.blocked ? "primary" : "" },
+        { click: () => set(ref(db, `users/${uid}/blocked`), u.blocked ? null : true).catch(fail) });
+      row(tb, [u.name + (u.blocked ? " 🚫" : ""), uid, sel, uid === auth.currentUser.uid ? "" : block, del]);
     }
   }));
   // PC는 에이전트가 첫 실행 때 자동 등록. agentInfo(IP·사용자·OS)는 에이전트가 시작할 때마다 갱신.
@@ -730,7 +854,7 @@ function startAdmin() {
       const a = info[p.agentUid] || {};
       row(tb, [id,
         p.name ?? "",
-        el("span", { textContent: isOnline(p) ? "온라인" : "오프라인", className: isOnline(p) ? "on" : "off" }), p.version, a.ip, a.machineName, a.user, a.os, fmt(a.updatedAt),
+        pcState(p), p.version, a.ip, a.machineName, a.user, a.os, fmt(a.updatedAt),
         el("input", { type: "number", value: p.minLevel ?? 1, style: "width:4em" }, { change: e => setPc({ minLevel: +e.target.value }) }),
         el("input", { type: "checkbox", checked: !!p.allowGuest }, { change: e => setPc({ allowGuest: e.target.checked }) }),
         el("button", { textContent: "이름 변경" }, { click: () => renamePc(id, p.name) }),
@@ -754,6 +878,13 @@ function startAdmin() {
 
   // 접속 승인 대기 시간: 원격 PC 승인 창이 이 시간 안에 응답 없으면 자동 취소 (에이전트가 읽음).
   unsubs.push(onValue(ref(db, "settings/approvalTimeout"), s => $("approvalTimeout").value = s.val() || 30));
+  // 해외 IP 차단: 값이 없으면 켜짐(true)으로 취급 — 에이전트와 같음
+  unsubs.push(onValue(ref(db, "settings/blockForeign"), s => $("blockForeign").checked = s.val() !== false));
+  $("blockForeign").onchange = e => {
+    const on = e.target.checked;
+    if (!on && !confirm("해외 IP 차단을 끌까요? 해외에서도 로그인·원격 접속이 가능해집니다.")) { e.target.checked = true; return; }
+    set(ref(db, "settings/blockForeign"), on).then(() => status(on ? "해외 IP 차단 켬" : "해외 IP 차단 끔"), fail);
+  };
   $("approvalTimeout").onchange = e => {
     const v = Math.round(+e.target.value);
     if (!(v >= 10 && v <= 600)) return status("승인 대기 시간은 10~600초로 입력하세요.");
@@ -766,12 +897,15 @@ function startAdmin() {
     for (const [id, p] of Object.entries(pcs)) if (ipKey(info[p.agentUid]?.ip) === k) upd[`pcs/${id}/name`] = name;
     update(ref(db), upd).catch(fail);
   };
-  let updBuf = null, updVer = null;
+  let updBuf = null, updVer = null, updSig = null;
+  // exe + 서명 파일(.sig, build-agent.ps1이 만듦)을 함께 선택. 서명 확인 기능이 있는 에이전트는 서명 없으면 설치 거부.
   $("updFile").onchange = async e => {
-    const f = e.target.files[0];
+    const files = [...e.target.files], f = files.find(x => /\.exe$/i.test(x.name)), s = files.find(x => /\.sig$/i.test(x.name));
     updBuf = f ? await f.arrayBuffer() : null;
     updVer = updBuf && exeVersion(updBuf);
-    $("updInfo").textContent = !f ? "" : `${updVer ? "버전 " + fmtVer(updVer) : "버전 정보 없음"} (${(f.size / 1048576).toFixed(1)}MB)`;
+    updSig = s ? (await s.text()).trim() : null;
+    $("updInfo").textContent = !f ? (s ? "exe도 같이 선택하세요" : "") : `${updVer ? "버전 " + fmtVer(updVer) : "버전 정보 없음"} (${(f.size / 1048576).toFixed(1)}MB) · ` +
+      (updSig ? "서명 ✓" : "서명 없음 — .sig 파일도 같이 선택하세요 (새 에이전트는 서명 없으면 거부)");
     $("updGo").disabled = !updVer;                                  // 자동 업데이트는 버전 비교가 필요
     $("dlUp").disabled = !f || !/\.exe$/i.test(f.name);              // 다운로드 페이지는 exe면 올릴 수 있음
   };
@@ -812,7 +946,7 @@ function startAdmin() {
         st.textContent = cmpVer(cur, updVer) === 0 ? "같은 버전 (건너뜀)" : `파일(${fmtVer(updVer)})보다 높음 (건너뜀) — 낮추려면 "업데이트할 버전"에 ${p.version} 이상 입력`;
         continue;
       }
-      pushUpdate(id, updBuf, updVer, s => st.textContent = (force ? "[강제] " : "") + s, force).catch(e => st.textContent = "실패: " + (e.message || e));
+      pushUpdate(id, updBuf, updVer, s => st.textContent = (force ? "[강제] " : "") + s, force, updSig).catch(e => st.textContent = "실패: " + (e.message || e));
     }
   };
   $("turnGo").onclick = () => {

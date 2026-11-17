@@ -9,6 +9,10 @@
           ".write": "auth != null && auth.uid === $uid && auth.provider !== 'anonymous' && (!root.child('loginFails/' + auth.token.email.replace('.', ',')).exists() || root.child('loginFails/' + auth.token.email.replace('.', ',')).val() < 5)",
           ".validate": "newData.isString() && newData.val().length <= 100"
         },
+        "logoutBefore": {
+          ".write": "auth != null && auth.uid === $uid && auth.provider !== 'anonymous' && newData.val() === now",
+          ".validate": "newData.isNumber()"
+        },
         "level": {
           ".write": "auth != null && auth.uid === $uid && auth.provider !== 'anonymous' && (!root.child('loginFails/' + auth.token.email.replace('.', ',')).exists() || root.child('loginFails/' + auth.token.email.replace('.', ',')).val() < 5) && !data.exists() && newData.val() === 0",
           ".validate": "newData.isNumber()"
@@ -56,6 +60,21 @@
       }
     },
 
+    "presence": {
+      ".read": "auth != null && root.child('users/' + auth.uid + '/level').val() === 9",
+      "$uid": {
+        "$sid": {
+          ".write": "auth != null && auth.uid === $uid && auth.provider !== 'anonymous'",
+          ".validate": "newData.hasChildren(['at']) && newData.child('at').isNumber()",
+          "ip": { ".validate": "newData.isString() && newData.val().length <= 64" },
+          "ua": { ".validate": "newData.isString() && newData.val().length <= 80" },
+          "cc": { ".validate": "newData.isString() && newData.val().length <= 4" },
+          "at": { ".validate": true },
+          "$other": { ".validate": false }
+        }
+      }
+    },
+
     "ipNames": {
       ".read": "auth != null && root.child('users/' + auth.uid + '/level').val() === 9",
       ".write": "auth != null && root.child('users/' + auth.uid + '/level').val() === 9",
@@ -66,11 +85,12 @@
       ".read": "auth != null",
       ".write": "auth != null && root.child('users/' + auth.uid + '/level').val() === 9",
       "approvalTimeout": { ".validate": "newData.isNumber() && newData.val() >= 10 && newData.val() <= 600" },
+      "blockForeign": { ".validate": "newData.isBoolean()" },
       "$other": { ".validate": false }
     },
 
     "pcs": {
-      ".read": "auth != null && auth.provider !== 'anonymous' && !root.child('users/' + auth.uid + '/deleted').exists() && (root.child('users/' + auth.uid + '/level').val() === 9 || (!root.child('loginFails/' + auth.token.email.replace('.', ',')).exists() || root.child('loginFails/' + auth.token.email.replace('.', ',')).val() < 5))",
+      ".read": "auth != null && auth.provider !== 'anonymous' && (!root.child('users/' + auth.uid + '/logoutBefore').exists() || auth.token.auth_time * 1000 > root.child('users/' + auth.uid + '/logoutBefore').val()) && !root.child('users/' + auth.uid + '/deleted').exists() && root.child('users/' + auth.uid + '/level').val() >= 1 && (root.child('users/' + auth.uid + '/level').val() === 9 || (!root.child('loginFails/' + auth.token.email.replace('.', ',')).exists() || root.child('loginFails/' + auth.token.email.replace('.', ',')).val() < 5))",
       ".write": "auth != null && root.child('users/' + auth.uid + '/level').val() === 9",
       "$pcId": {
         ".read": "auth != null && data.child('agentUid').val() === auth.uid",
@@ -82,11 +102,13 @@
         "version":  { ".write": "auth != null && root.child('pcs/' + $pcId + '/agentUid').val() === auth.uid", ".validate": "newData.isString() && newData.val().length <= 20" },
         "lastSeen": { ".write": "auth != null && root.child('pcs/' + $pcId + '/agentUid').val() === auth.uid", ".validate": "newData.val() === now" },
         "minLevel": { ".write": "auth != null && root.child('pcs/' + $pcId + '/agentUid').val() === auth.uid && newData.isNumber() && newData.val() >= 1 && newData.val() <= 9", ".validate": "newData.isNumber()" },
-        "allowGuest": { ".validate": "newData.isBoolean()" }
+        "allowGuest": { ".validate": "newData.isBoolean()" },
+        "remote":   { ".write": "auth != null && root.child('pcs/' + $pcId + '/agentUid').val() === auth.uid", ".validate": "newData.hasChildren(['who', 'since']) && newData.child('who').isString() && newData.child('who').val().length <= 100 && newData.child('since').val() === now && (!newData.child('uid').exists() || newData.child('uid').isString())" }
       }
     },
 
     "pcSecrets": {
+      ".write": "auth != null && root.child('users/' + auth.uid + '/level').val() === 9",
       "$pcId": {
         ".read":  "auth != null && root.child('pcs/' + $pcId + '/agentUid').val() === auth.uid",
         ".write": "auth != null && root.child('pcs/' + $pcId + '/agentUid').val() === auth.uid",
@@ -100,7 +122,7 @@
         ".write": "auth != null && root.child('pcs/' + $pcId + '/agentUid').val() === auth.uid",
         "$reqId": {
           ".read": "auth != null && data.child('uid').val() === auth.uid",
-          ".write": "auth != null && !data.exists() && newData.child('uid').val() === auth.uid && newData.child('status').val() === 'pending' && root.child('pcs/' + $pcId + '/agentUid').exists() && ((newData.child('mode').val() === 'guest' && root.child('pcs/' + $pcId + '/allowGuest').val() === true && root.child('pcSecrets/' + $pcId + '/code').exists() && newData.child('code').val() === root.child('pcSecrets/' + $pcId + '/code').val() && now < root.child('pcSecrets/' + $pcId + '/codeIssuedAt').val() + 300000) || (newData.child('mode').val() === 'update' && root.child('users/' + auth.uid + '/level').val() === 9) || (newData.child('mode').val() === 'account' && auth.provider !== 'anonymous' && (root.child('users/' + auth.uid + '/level').val() === 9 || (!root.child('loginFails/' + auth.token.email.replace('.', ',')).exists() || root.child('loginFails/' + auth.token.email.replace('.', ',')).val() < 5)) && root.child('users/' + auth.uid + '/level').val() >= 1))"
+          ".write": "auth != null && (!root.child('users/' + auth.uid + '/logoutBefore').exists() || auth.token.auth_time * 1000 > root.child('users/' + auth.uid + '/logoutBefore').val()) && !data.exists() && newData.child('uid').val() === auth.uid && newData.child('status').val() === 'pending' && root.child('pcs/' + $pcId + '/agentUid').exists() && ((newData.child('mode').val() === 'guest' && root.child('pcs/' + $pcId + '/allowGuest').val() === true && root.child('pcSecrets/' + $pcId + '/code').exists() && newData.child('code').val() === root.child('pcSecrets/' + $pcId + '/code').val() && now < root.child('pcSecrets/' + $pcId + '/codeIssuedAt').val() + 300000) || (newData.child('mode').val() === 'update' && root.child('users/' + auth.uid + '/level').val() === 9) || (newData.child('mode').val() === 'kick' && root.child('users/' + auth.uid + '/level').val() === 9) || (newData.child('mode').val() === 'account' && auth.provider !== 'anonymous' && (root.child('users/' + auth.uid + '/level').val() === 9 || (!root.child('loginFails/' + auth.token.email.replace('.', ',')).exists() || root.child('loginFails/' + auth.token.email.replace('.', ',')).val() < 5)) && root.child('users/' + auth.uid + '/level').val() >= 1 && !root.child('users/' + auth.uid + '/blocked').exists()))"
         }
       }
     },
