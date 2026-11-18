@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <PlatformTarget>x64</PlatformTarget>
+    <ApplicationIcon>..\agent\app.ico</ApplicationIcon>
+    <AssemblyName>HtUtil.Viewer</AssemblyName>
+    <Product>HtUtil Viewer</Product>
+    <AllowedReferenceRelatedFileExtensions>none</AllowedReferenceRelatedFileExtensions>
+    <!-- site URL from .firebaserc (gitignored) so the project id never lands in git -->
+    <FirebaseRc>$([System.IO.File]::ReadAllText('$(MSBuildProjectDirectory)\..\.firebaserc'))</FirebaseRc>
+    <ProjectId>$([System.Text.RegularExpressions.Regex]::Match($(FirebaseRc), '"default"\s*:\s*"([^"]+)"').Groups[1].Value)</ProjectId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <AssemblyMetadata Include="Url" Value="https://$(ProjectId).web.app" />
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2903.40" />
+  </ItemGroup>
+
+</Project>

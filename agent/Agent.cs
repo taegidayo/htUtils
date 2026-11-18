@@ -116,11 +116,17 @@ public sealed class Agent(Config cfg, MainForm ui)
         return id;
     }
 
+    static volatile bool _netDown;
     static async Task Loop(TimeSpan every, Func<Task> f, CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
         {
-            try { await f(); } catch (Exception e) { Log.Write(e.Message); }
+            try { await f(); if (_netDown) { _netDown = false; Log.Write("네트워크 다시 연결됨"); } }
+            catch (HttpRequestException e) // DNS/network down (sleep, Wi-Fi drop, port exhaustion): log once, not every 5s
+            {
+                if (!_netDown) { _netDown = true; Log.Write($"네트워크 끊김 — 자동으로 다시 시도합니다 ({e.Message})"); }
+            }
+            catch (Exception e) { Log.Write(e.Message); }
             await Task.Delay(every, ct).ContinueWith(_ => { });
         }
     }

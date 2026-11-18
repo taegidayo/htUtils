@@ -72,6 +72,7 @@ public sealed class Firebase(string apiKey, string dbUrl)
     /// Streams `path` (SSE). onEvent(relativePath, data) for every put/patch. Reconnects until ct cancels.
     public async Task Listen(string path, Action<string, JsonNode?> onEvent, CancellationToken ct)
     {
+        var down = false;
         while (!ct.IsCancellationRequested)
         {
             try
@@ -80,10 +81,16 @@ public sealed class Firebase(string apiKey, string dbUrl)
                 req.Headers.Accept.ParseAdd("text/event-stream");
                 using var r = await Http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
                 r.EnsureSuccessStatusCode();
+                down = false;
+                // Firebase sends keep-alive every ~30s. After sleep / Wi-Fi drop the TCP connection can die silently and the
+                // read would wait forever (agent shows online via heartbeat but never sees remote requests) -> reconnect.
+                using var idle = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                idle.CancelAfter(TimeSpan.FromSeconds(75));
                 using var reader = new StreamReader(await r.Content.ReadAsStreamAsync(ct), Encoding.UTF8);
                 string? ev = null;
-                while (await reader.ReadLineAsync(ct) is { } line)
+                while (await reader.ReadLineAsync(idle.Token) is { } line)
                 {
+                    idle.CancelAfter(TimeSpan.FromSeconds(75));
                     if (line.StartsWith("event: ")) ev = line[7..];
                     else if (line.StartsWith("data: ") && ev is "put" or "patch")
                     {
@@ -94,7 +101,9 @@ public sealed class Firebase(string apiKey, string dbUrl)
                 }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
-            catch (Exception e) { Log.Write($"listen {path}: {e.Message}"); }
+            catch (OperationCanceledException) { Log.Write($"listen {path}: 응답 없음 — 다시 연결"); }
+            catch (HttpRequestException) when (down) { } // network still down: already logged once
+            catch (Exception e) { down = e is HttpRequestException; Log.Write($"listen {path}: {e.Message}"); }
             await Task.Delay(2000, ct).ContinueWith(_ => { });
         }
     }

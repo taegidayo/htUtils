@@ -70,6 +70,20 @@ $("signIn").onclick = async () => {
 // 프로필이 레벨 0이라 규칙상 PC 목록도 못 봄. 완전히 막으려면 Firebase 콘솔 Authentication → 설정에서 가입 끄기)
 $("signOut").onclick = () => logout();
 
+// 자동 로그아웃: 계정 로그인 상태에서 10분 동안 키보드·마우스·터치가 없으면 (원격 중이면 연결도 끊음).
+// ponytail: 시계는 이 창 기준 — 같은 계정의 다른 창은 각자 셈.
+const IDLE_MS = 10 * 60 * 1000;
+let lastAct = Date.now();
+const markActive = () => lastAct = Date.now();
+const watchActivity = w => ["pointerdown", "pointermove", "keydown", "wheel", "touchstart"]
+  .forEach(t => w.addEventListener(t, markActive, { capture: true, passive: true })); // capture: 원격 화면 핸들러가 막아도 셈
+watchActivity(window);
+setInterval(() => {
+  if (!auth.currentUser || auth.currentUser.isAnonymous || Date.now() - lastAct < IDLE_MS) return;
+  hangUp();
+  logout("10분 동안 조작이 없어 자동 로그아웃되었습니다.");
+}, 15000);
+
 // ---------- 로그인 세션 (presence) ----------
 // 로그인한 창마다 presence/{uid}/{sid} = {ip, ua, at}. 창을 닫거나 연결이 끊기면 서버가 지움(onDisconnect), 로그아웃 때는 직접 지움.
 // 강제 로그아웃 = users/{uid}/logoutBefore = 지금: 그 전에 로그인한 창은 스스로 로그아웃하고, DB 규칙도 PC 목록·원격 요청을 막음.
@@ -120,7 +134,7 @@ let unsubs = [];
 onAuthStateChanged(auth, async user => {
   unsubs.forEach(u => u()); unsubs = [];
   const account = user && !user.isAnonymous;
-  if (account) clearLogin();
+  if (account) { clearLogin(); markActive(); }
   $("login").hidden = account; $("pcs").hidden = !account; $("admin").hidden = true;
   if (!account) return;
   const name = toId(user.email);
@@ -441,6 +455,7 @@ function openPopup(s) {
   w.addEventListener("resize", relayout);
   // 새 창을 닫으면 하나만 보기로 돌아감 (원격 PC도 그 모니터만 캡처)
   w.addEventListener("pagehide", () => { if (popups.get(s.i)?.win === w) { closePopups(); if (allMode()) showMon(mainMon); } });
+  watchActivity(w); // 모니터별 새 창에서의 조작도 활동으로 셈
   popups.set(s.i, { win: w, video: v });
   return true;
 }
