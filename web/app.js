@@ -80,6 +80,7 @@ const watchActivity = w => ["pointerdown", "pointermove", "keydown", "wheel", "t
 watchActivity(window);
 setInterval(() => {
   if (!auth.currentUser || auth.currentUser.isAnonymous || Date.now() - lastAct < IDLE_MS) return;
+  if (inFile && Date.now() - inFile.at < 60000) return; // 받는 중인 파일은 끝까지 받고 로그아웃 (1분 넘게 멈추면 포기)
   hangUp();
   logout("10분 동안 조작이 없어 자동 로그아웃되었습니다.");
 }, 15000);
@@ -507,13 +508,13 @@ let pendingSend = null, inFile = null;
 function onFileMessage(e) {
   if (typeof e.data !== "string") {
     if (!inFile) return;
-    inFile.parts.push(e.data); inFile.got += e.data.byteLength;
+    inFile.parts.push(e.data); inFile.got += e.data.byteLength; inFile.at = Date.now();
     const pct = Math.floor(inFile.got * 100 / Math.max(1, inFile.size));
     if (pct !== inFile.pct) xfer(`받는 중: ${inFile.name} ${inFile.pct = pct}%`);
     return;
   }
   const m = JSON.parse(e.data);
-  if (m.t === "file") inFile = { name: m.name, size: m.size, parts: [], got: 0, pct: -1 };
+  if (m.t === "file") inFile = { name: m.name, size: m.size, parts: [], got: 0, pct: -1, at: Date.now() };
   else if (m.t === "end" && inFile) {
     const a = el("a", { href: URL.createObjectURL(new Blob(inFile.parts)), download: inFile.name });
     a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 60000);
